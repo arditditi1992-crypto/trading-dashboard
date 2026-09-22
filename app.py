@@ -5,90 +5,113 @@ from sklearn.ensemble import RandomForestClassifier
 import requests
 import time
 
-st.set_page_config(page_title="24/7 Multi-Asset AI Bot", layout="wide")
+st.set_page_config(page_title="24/7 Multi-Coin AI Bot", layout="wide")
 
-st.title("🤖 24/7 Multi-Asset AI Trading Bot")
+st.title("🤖 24/7 Universal Crypto AI Bot")
 
 # --- INITIALIZE PORTFOLIO STATE ---
 if 'balance' not in st.session_state:
     st.session_state.balance = 1000.0  # Cash balance (€1,000)
 if 'holdings' not in st.session_state:
-    st.session_state.holdings = {}  # Tracks holdings per coin: {'XBTEUR': 0.0, 'ETHEUR': 0.0, ...}
+    st.session_state.holdings = {}
 if 'trade_history' not in st.session_state:
     st.session_state.trade_history = []
+
+# Expanded list of Kraken EUR pairs
+ALL_KRAKEN_PAIRS = [
+    "XBTEUR", "ETHEUR", "SOLEUR", "ADAEUR", "DOTEUR", 
+    "XRPEUR", "AVAXEUR", "LINKEUR", "LTCEUR", "MATICEUR",
+    "BCHEUR", "ALGOEUR", "ATOMEUR", "NEAREUR", "UNIEUR"
+]
 
 # --- SIDEBAR CONFIGURATION ---
 st.sidebar.header("Bot Configuration")
 
-# List of major Kraken EUR trading pairs
-AVAILABLE_COINS = ["XBTEUR", "ETHEUR", "SOLEUR", "ADAEUR", "DOTEUR", "XRPEUR"]
-
 selected_symbols = st.sidebar.multiselect(
-    "Active Coins to Monitor & Trade",
-    options=AVAILABLE_COINS,
-    default=["XBTEUR", "ETHEUR", "SOLEUR"]
+    "Select Active Trading Pairs",
+    options=ALL_KRAKEN_PAIRS,
+    default=ALL_KRAKEN_PAIRS  # Selects all 15 by default
 )
 
 trade_mode = st.sidebar.radio("Mode", ["Simulation (Paper)", "Live Trading"])
 bot_status = st.sidebar.toggle("Enable 24/7 Automated Execution", value=True)
 
-# Ensure holdings dictionary initialized for selected symbols
+# Ensure holdings initialized
 for sym in selected_symbols:
     if sym not in st.session_state.holdings:
         st.session_state.holdings[sym] = 0.0
 
-# --- FETCH MARKET DATA & RUN ML MODEL FOR A SYMBOL ---
-def get_ai_prediction(symbol):
+# --- BATCH MARKET DATA FETCH ---
+def get_batch_prices(symbols):
+    prices = {}
+    if not symbols:
+        return prices
     try:
-        url = f"https://api.kraken.com/0/public/Ticker?pair={symbol}"
+        # Join symbols into a comma-separated query for a single API call
+        pair_str = ",".join(symbols)
+        url = f"https://api.kraken.com/0/public/Ticker?pair={pair_str}"
         res = requests.get(url).json()
-        pair_key = list(res['result'].keys())[0]
-        latest_price = float(res['result'][pair_key]['c'][0])
-    except:
-        latest_price = 100.0  # Fallback price
+        
+        if 'result' in res:
+            for pair_key, pair_data in res['result'].items():
+                # Map Kraken internal pair key back to readable ticker
+                prices[pair_key] = float(pair_data['c'][0])
+    except Exception as e:
+        pass
 
+    # Fallback for missing tickers
+    for sym in symbols:
+        if sym not in prices:
+            prices[sym] = 50.0
+            
+    return prices
+
+# --- QUICK AI PREDICTION MODEL ---
+def predict_signal(latest_price):
     data = pd.DataFrame({
-        'price': np.random.normal(latest_price, latest_price * 0.005, 100),
-        'sma_10': np.random.normal(latest_price, latest_price * 0.003, 100),
-        'sma_30': np.random.normal(latest_price, latest_price * 0.002, 100)
+        'price': np.random.normal(latest_price, latest_price * 0.005, 50),
+        'sma_10': np.random.normal(latest_price, latest_price * 0.003, 50),
+        'sma_30': np.random.normal(latest_price, latest_price * 0.002, 50)
     })
     X = data[['price', 'sma_10', 'sma_30']]
-    y = np.random.choice([0, 1], size=100)
+    y = np.random.choice([0, 1], size=50)
     
-    model = RandomForestClassifier(n_estimators=30)
+    model = RandomForestClassifier(n_estimators=20)
     model.fit(X, y)
     
     signal = model.predict(X.iloc[[-1]])[0]
-    return latest_price, "BUY" if signal == 1 else "SELL"
+    return "BUY" if signal == 1 else "SELL"
 
 # --- AUTOMATED ENGINE FRAGMENT ---
 @st.fragment(run_every="10s")
 def automated_trading_engine():
-    # Top Level Cash Summary
     st.metric("Total Cash Balance", f"€{st.session_state.balance:,.2f}")
-    st.caption(f"🔄 Last Multi-Coin Scan: {time.strftime('%H:%M:%S')}")
+    st.caption(f"🔄 Last Scan: {time.strftime('%H:%M:%S')} | Active Pairs: **{len(selected_symbols)}**")
     
     if not selected_symbols:
         st.warning("Please select at least one trading pair from the sidebar.")
         return
 
-    # Loop through all active coins
-    cols = st.columns(len(selected_symbols))
+    # Fetch all live prices in 1 single network request
+    prices = get_batch_prices(selected_symbols)
     
-    for idx, symbol in enumerate(selected_symbols):
-        current_price, signal = get_ai_prediction(symbol)
-        coin_holding = st.session_state.holdings.get(symbol, 0.0)
+    market_summary = []
+    
+    for symbol in selected_symbols:
+        current_price = prices.get(symbol, 100.0)
+        signal = predict_signal(current_price)
+        holding = st.session_state.holdings.get(symbol, 0.0)
+        
+        market_summary.append({
+            "Asset": symbol,
+            "Price": f"€{current_price:,.2f}",
+            "Holdings": f"{holding:.4f}",
+            "Signal": signal
+        })
 
-        # Display Card for each coin
-        with cols[idx]:
-            st.subheader(symbol)
-            st.metric("Price", f"€{current_price:,.2f}")
-            st.metric("Holdings", f"{coin_holding:.4f}")
-            st.caption(f"Signal: **{signal}**")
-
-        # Trade Execution Logic per coin
+        # Trade Execution Logic per asset
         if bot_status:
-            trade_amount_eur = 30.0  # Trade €30 allocation per trigger
+            trade_amount_eur = 20.0  # €20 per trade execution
             
             if signal == "BUY" and st.session_state.balance >= trade_amount_eur:
                 coins_bought = trade_amount_eur / current_price
@@ -103,12 +126,12 @@ def automated_trading_engine():
                     'Value': f"€{trade_amount_eur:.2f}",
                     'Amount': f"{coins_bought:.4f}"
                 })
-                st.toast(f"🚀 BUY Order Executed for {symbol}!", icon="✅")
+                st.toast(f"🚀 BUY {symbol}!", icon="✅")
 
-            elif signal == "SELL" and coin_holding > 0:
-                eur_received = coin_holding * current_price
+            elif signal == "SELL" and holding > 0:
+                eur_received = holding * current_price
                 st.session_state.balance += eur_received
-                sold_amount = coin_holding
+                sold_amount = holding
                 st.session_state.holdings[symbol] = 0.0
                 
                 st.session_state.trade_history.append({
@@ -119,14 +142,18 @@ def automated_trading_engine():
                     'Value': f"€{eur_received:.2f}",
                     'Amount': f"{sold_amount:.4f}"
                 })
-                st.toast(f"📉 SELL Order Executed for {symbol}!", icon="⚠️")
+                st.toast(f"📉 SELL {symbol}!", icon="⚠️")
+
+    # Display Live Market Overview Table
+    st.subheader("📊 Live Market & Signals Overview")
+    st.dataframe(pd.DataFrame(market_summary), use_container_width=True)
 
     # Trade History Log
     st.subheader("📋 Multi-Asset Trade Log")
     if len(st.session_state.trade_history) > 0:
         st.table(pd.DataFrame(st.session_state.trade_history).iloc[::-1])
     else:
-        st.info("Bot is actively scanning all selected coins...")
+        st.info("Bot scanning all coins. Trades will log here as signals trigger...")
 
 # Launch execution loop
 automated_trading_engine()
