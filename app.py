@@ -141,34 +141,33 @@ if st.session_state.bot_running:
 else:
     st.warning("🔴 STATUS: BOT IS PAUSED")
 
-# --- FETCH REAL KRAKEN OHLC CANDLES & COMPUTE TA INDICATORS ---
-def fetch_ta_data(symbol, interval=5):
+# --- FETCH REAL BINANCE OHLC CANDLES & COMPUTE TA INDICATORS ---
+def fetch_ta_data(symbol, interval="5m"):
     """
-    Fetches real historical candle data from Kraken OHLC API and calculates:
-    RSI, MACD, MACD Signal, EMA50, EMA200, Lower/Upper Bollinger Bands, Volume Spike.
+    Fetches live 5-minute candles directly from Binance API
+    and calculates RSI, MACD, Moving Averages, and Bollinger Bands.
     """
     try:
-        url = f"https://api.kraken.com/0/public/OHLC?pair={symbol}&interval={interval}"
-        res = requests.get(url, timeout=10).json()
+        formatted_symbol = symbol.replace("/", "").replace("-", "").upper()
+
+        url = f"https://api.binance.com/api/v3/klines?symbol={formatted_symbol}&interval={interval}&limit=100"
+        res = requests.get(url, timeout=3).json()
         
-        if 'result' not in res or not res['result']:
+        if isinstance(res, dict) and "code" in res:
             return None
-        
-        # Extract raw candle data
-        pair_key = list(res['result'].keys())[0]
-        candles = res['result'][pair_key]
-        
-        df = pd.DataFrame(candles, columns=[
-            'time', 'open', 'high', 'low', 'close', 'vwap', 'volume', 'count'
+
+        df = pd.DataFrame(res, columns=[
+            'time', 'open', 'high', 'low', 'close', 'volume',
+            'close_time', 'qav', 'num_trades', 'tb_base_av', 'tb_quote_av', 'ignore'
         ])
         
         df['close'] = df['close'].astype(float)
         df['volume'] = df['volume'].astype(float)
 
-        if len(df) < 50:
+        if len(df) < 30:
             return None
 
-        # 1. RSI (14 Period)
+        # --- TECHNICAL INDICATOR CALCULATIONS ---
         delta = df['close'].diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
@@ -177,25 +176,18 @@ def fetch_ta_data(symbol, interval=5):
         rs = avg_gain / (avg_loss + 1e-10)
         df['rsi'] = 100 - (100 / (1 + rs))
 
-        # 2. MACD (12, 26, 9)
         ema12 = df['close'].ewm(span=12, adjust=False).mean()
         ema26 = df['close'].ewm(span=26, adjust=False).mean()
         df['macd'] = ema12 - ema26
         df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
 
-        # 3. EMA Trend Lines (50 and 200 bars)
         df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
         df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
 
-        # 4. Bollinger Bands (20 Period, 2 Std Dev)
         sma20 = df['close'].rolling(window=20).mean()
         std20 = df['close'].rolling(window=20).std()
         df['bb_upper'] = sma20 + (2 * std20)
         df['bb_lower'] = sma20 - (2 * std20)
-
-        # 5. Volume Spike (1.2x of 20-candle MA)
-        df['vol_ma'] = df['volume'].rolling(window=20).mean()
-        df['vol_spike'] = df['volume'] >= (df['vol_ma'] * 1.2)
 
         latest = df.iloc[-1]
         prev = df.iloc[-2]
@@ -210,12 +202,12 @@ def fetch_ta_data(symbol, interval=5):
             "ema50": float(latest['ema50']),
             "ema200": float(latest['ema200']),
             "bb_lower": float(latest['bb_lower']),
-            "bb_upper": float(latest['bb_upper']),
-            "vol_spike": bool(latest['vol_spike'])
+            "bb_upper": float(latest['bb_upper'])
         }
 
     except Exception:
         return None
+
 
 # --- MULTI-INDICATOR SIGNAL ENGINE ---
 def analyze_market_signal(symbol):
