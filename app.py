@@ -8,7 +8,7 @@ import os
 
 st.set_page_config(page_title="24/7 Universal Crypto AI Bot", layout="wide")
 
-st.title("🤖 24/7 Universal Crypto AI Bot (Long & Short)")
+st.title("🤖 24/7 Crypto AI Bot (Live TA Engine)")
 
 PORTFOLIO_FILE = "portfolio.json"
 
@@ -22,9 +22,9 @@ def load_portfolio():
             pass
     return {
         "balance": 1000.0,
-        "holdings": {},      # Long holdings (units)
-        "short_holdings": {},# Short holdings (units)
-        "entry_prices": {},  # Entry price per coin
+        "holdings": {},
+        "short_holdings": {},
+        "entry_prices": {},
         "trade_history": []
     }
 
@@ -56,7 +56,7 @@ if 'bot_running' not in st.session_state:
 def get_kraken_eur_pairs():
     try:
         url = "https://api.kraken.com/0/public/AssetPairs"
-        res = requests.get(url).json()
+        res = requests.get(url, timeout=10).json()
         pair_map = {}
         pair_list = []
         if 'result' in res:
@@ -91,9 +91,13 @@ with sb_col2:
         ["Price (High to Low)", "Price (Low to High)", "Alphabetical"]
     )
 
-st.sidebar.subheader("🎯 Profit & Protection")
+st.sidebar.subheader("🎯 Risk & Execution Controls")
 take_profit_pct = st.sidebar.slider("Min Take Profit (%)", min_value=0.5, max_value=10.0, value=1.5, step=0.5)
 stop_loss_pct = st.sidebar.slider("Stop Loss (%)", min_value=1.0, max_value=15.0, value=3.0, step=0.5)
+
+st.sidebar.subheader("📊 Technical Indicator Sensitivity")
+rsi_oversold = st.sidebar.slider("RSI Oversold (Buy Threshold)", 15, 45, 30, 1)
+rsi_overbought = st.sidebar.slider("RSI Overbought (Short Threshold)", 55, 85, 70, 1)
 
 selected_symbols = st.sidebar.multiselect(
     f"Select Trading Pairs ({len(ALL_KRAKEN_PAIRS)} Available)",
@@ -101,8 +105,8 @@ selected_symbols = st.sidebar.multiselect(
     default=["XBTEUR", "ETHEUR", "SOLEUR", "XRPEUR", "ADAEUR"]
 )
 
-# Reset Button to start fresh paper portfolio
-if st.sidebar.button("🔄 Reset Portfolio Balance (€1,000)"):
+# Reset Button
+if st.sidebar.button("🔄 Reset Portfolio (€1,000)"):
     st.session_state.balance = 1000.0
     st.session_state.holdings = {}
     st.session_state.short_holdings = {}
@@ -130,74 +134,143 @@ with col_start:
 with col_stop:
     if st.button("⏸️ PAUSE BOT", use_container_width=True):
         st.session_state.bot_running = False
-        st.toast("Bot paused: Trading disabled, data view active.", icon="🔴")
+        st.toast("Bot paused: Trading disabled.", icon="🔴")
 
 if st.session_state.bot_running:
-    st.success("🟢 STATUS: BOT IS ACTIVE AND TRADING")
+    st.success("🟢 STATUS: BOT IS ACTIVE AND RUNNING TA STRATEGY")
 else:
-    st.warning("🔴 STATUS: BOT IS PAUSED (Prices update, but NO trades execute)")
+    st.warning("🔴 STATUS: BOT IS PAUSED")
 
-# --- BATCH MARKET DATA FETCH ---
-def get_batch_prices(symbols):
-    prices = {}
-    if not symbols:
-        return prices
+# --- FETCH REAL KRAKEN OHLC CANDLES & COMPUTE TA INDICATORS ---
+def fetch_ta_data(symbol, interval=5):
+    """
+    Fetches real historical candle data from Kraken OHLC API and calculates:
+    RSI, MACD, MACD Signal, EMA50, EMA200, Lower/Upper Bollinger Bands, Volume Spike.
+    """
     try:
-        pair_str = ",".join(symbols)
-        url = f"https://api.kraken.com/0/public/Ticker?pair={pair_str}"
-        res = requests.get(url).json()
+        url = f"https://api.kraken.com/0/public/OHLC?pair={symbol}&interval={interval}"
+        res = requests.get(url, timeout=10).json()
         
-        if 'result' in res:
-            for internal_key, pair_data in res['result'].items():
-                normal_name = PAIR_MAP.get(internal_key, internal_key)
-                if normal_name not in symbols:
-                    for sym in symbols:
-                        if sym in internal_key or internal_key.endswith(sym):
-                            normal_name = sym
-                            break
-                prices[normal_name] = float(pair_data['c'][0])
-    except Exception:
-        pass
-            
-    return prices
+        if 'result' not in res or not res['result']:
+            return None
+        
+        # Extract raw candle data
+        pair_key = list(res['result'].keys())[0]
+        candles = res['result'][pair_key]
+        
+        df = pd.DataFrame(candles, columns=[
+            'time', 'open', 'high', 'low', 'close', 'vwap', 'volume', 'count'
+        ])
+        
+        df['close'] = df['close'].astype(float)
+        df['volume'] = df['volume'].astype(float)
 
-# --- SMART SIGNAL ENGINE (LONG & SHORT) ---
-def analyze_market_signal(symbol, current_price):
+        if len(df) < 50:
+            return None
+
+        # 1. RSI (14 Period)
+        delta = df['close'].diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.rolling(window=14).mean()
+        avg_loss = loss.rolling(window=14).mean()
+        rs = avg_gain / (avg_loss + 1e-10)
+        df['rsi'] = 100 - (100 / (1 + rs))
+
+        # 2. MACD (12, 26, 9)
+        ema12 = df['close'].ewm(span=12, adjust=False).mean()
+        ema26 = df['close'].ewm(span=26, adjust=False).mean()
+        df['macd'] = ema12 - ema26
+        df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
+
+        # 3. EMA Trend Lines (50 and 200 bars)
+        df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
+        df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
+
+        # 4. Bollinger Bands (20 Period, 2 Std Dev)
+        sma20 = df['close'].rolling(window=20).mean()
+        std20 = df['close'].rolling(window=20).std()
+        df['bb_upper'] = sma20 + (2 * std20)
+        df['bb_lower'] = sma20 - (2 * std20)
+
+        # 5. Volume Spike (1.2x of 20-candle MA)
+        df['vol_ma'] = df['volume'].rolling(window=20).mean()
+        df['vol_spike'] = df['volume'] >= (df['vol_ma'] * 1.2)
+
+        latest = df.iloc[-1]
+        prev = df.iloc[-2]
+
+        return {
+            "current_price": float(latest['close']),
+            "rsi": float(latest['rsi']),
+            "macd": float(latest['macd']),
+            "macd_signal": float(latest['macd_signal']),
+            "prev_macd": float(prev['macd']),
+            "prev_macd_signal": float(prev['macd_signal']),
+            "ema50": float(latest['ema50']),
+            "ema200": float(latest['ema200']),
+            "bb_lower": float(latest['bb_lower']),
+            "bb_upper": float(latest['bb_upper']),
+            "vol_spike": bool(latest['vol_spike'])
+        }
+
+    except Exception:
+        return None
+
+# --- MULTI-INDICATOR SIGNAL ENGINE ---
+def analyze_market_signal(symbol):
+    data = fetch_ta_data(symbol)
+    if not data:
+        return 0.0, "HOLD", "Data Unavailable"
+
+    price = data['current_price']
     long_qty = st.session_state.holdings.get(symbol, 0.0)
     short_qty = st.session_state.short_holdings.get(symbol, 0.0)
     entry_price = st.session_state.entry_prices.get(symbol, 0.0)
 
-    if current_price <= 0:
-        return "HOLD", "Invalid Price"
-
-    # 1. EVALUATE OPEN LONG POSITION
+    # 1. RISK CONTROL FIRST (OPEN POSITIONS)
     if long_qty > 0 and entry_price > 0:
-        pnl_pct = ((current_price - entry_price) / entry_price) * 100.0
+        pnl_pct = ((price - entry_price) / entry_price) * 100.0
         if pnl_pct >= take_profit_pct:
-            return "SELL", f"Long Take-Profit Hit (+{pnl_pct:.2f}%)"
+            return price, "SELL", f"Long Take-Profit Hit (+{pnl_pct:.2f}%)"
         if pnl_pct <= -stop_loss_pct:
-            return "SELL", f"Long Stop-Loss Triggered ({pnl_pct:.2f}%)"
-        return "HOLD", f"Holding Long ({pnl_pct:+.2f}%)"
+            return price, "SELL", f"Long Stop-Loss Triggered ({pnl_pct:.2f}%)"
+        return price, "HOLD", f"Holding Long ({pnl_pct:+.2f}%)"
 
-    # 2. EVALUATE OPEN SHORT POSITION
     if short_qty > 0 and entry_price > 0:
-        # Profit on Short = Price Decreases
-        pnl_pct = ((entry_price - current_price) / entry_price) * 100.0
+        pnl_pct = ((entry_price - price) / entry_price) * 100.0
         if pnl_pct >= take_profit_pct:
-            return "COVER", f"Short Take-Profit Hit (+{pnl_pct:.2f}%)"
+            return price, "COVER", f"Short Take-Profit Hit (+{pnl_pct:.2f}%)"
         if pnl_pct <= -stop_loss_pct:
-            return "COVER", f"Short Stop-Loss Triggered ({pnl_pct:.2f}%)"
-        return "HOLD", f"Holding Short ({pnl_pct:+.2f}%)"
+            return price, "COVER", f"Short Stop-Loss Triggered ({pnl_pct:.2f}%)"
+        return price, "HOLD", f"Holding Short ({pnl_pct:+.2f}%)"
 
-    # 3. IF NO OPEN POSITIONS: CHECK BUY (LONG) OR SHORT SIGNALS
-    rsi_mock = np.random.uniform(15, 85)
+    # 2. ENTRY SIGNALS (COMBINED TA STRATEGY)
+    # Check MACD Bullish / Bearish Crossovers
+    macd_bullish_cross = (data['prev_macd'] < data['prev_macd_signal']) and (data['macd'] > data['macd_signal'])
+    macd_bearish_cross = (data['prev_macd'] > data['prev_macd_signal']) and (data['macd'] < data['macd_signal'])
 
-    if rsi_mock < 35:
-        return "BUY", "Oversold Signal (Buying Dip)"
-    elif rsi_mock > 65:
-        return "SHORT", "Overbought Signal (Shorting Peak)"
+    # BUY CONDITIONS
+    buy_score = 0
+    if data['rsi'] < rsi_oversold: buy_score += 1
+    if macd_bullish_cross or data['macd'] > data['macd_signal']: buy_score += 1
+    if price <= data['bb_lower']: buy_score += 1
+    if price >= data['ema50']: buy_score += 1  # Bullish trend alignment
 
-    return "HOLD", "Neutral Market"
+    # SHORT CONDITIONS
+    short_score = 0
+    if data['rsi'] > rsi_overbought: short_score += 1
+    if macd_bearish_cross or data['macd'] < data['macd_signal']: short_score += 1
+    if price >= data['bb_upper']: short_score += 1
+    if price <= data['ema50']: short_score += 1  # Bearish trend alignment
+
+    # Signal Threshold (Requires at least 3 matching confirmations)
+    if buy_score >= 3:
+        return price, "BUY", f"Strong Buy (RSI: {data['rsi']:.1f}, BB Lower Hit, MACD Bullish)"
+    elif short_score >= 3:
+        return price, "SHORT", f"Strong Short (RSI: {data['rsi']:.1f}, BB Upper Hit, MACD Bearish)"
+
+    return price, "HOLD", f"Neutral (RSI: {data['rsi']:.1f} | MACD Neutral)"
 
 # --- AUTOMATED ENGINE FRAGMENT ---
 @st.fragment(run_every="10s")
@@ -206,23 +279,20 @@ def automated_trading_engine():
     st.caption(f"🔄 Last Scan: {time.strftime('%H:%M:%S')} | Active Pairs: **{len(selected_symbols)}**")
     
     if not selected_symbols:
-        st.info("Select trading pairs in the sidebar to view prices.")
+        st.info("Select trading pairs in the sidebar to start live monitoring.")
         return
 
-    prices = get_batch_prices(selected_symbols)
     market_summary = []
     executed_any_trade = False
     
     for symbol in selected_symbols:
-        current_price = prices.get(symbol, 0.0)
+        current_price, signal, reason = analyze_market_signal(symbol)
         
         if current_price > 0:
-            signal, reason = analyze_market_signal(symbol, current_price)
             long_qty = st.session_state.holdings.get(symbol, 0.0)
             short_qty = st.session_state.short_holdings.get(symbol, 0.0)
             entry_price = st.session_state.entry_prices.get(symbol, 0.0)
 
-            # Determine position type & P/L calculation
             position_type = "NONE"
             pl_str = "0.00%"
 
@@ -246,7 +316,7 @@ def automated_trading_engine():
                 "Reason": reason
             })
 
-            # --- AUTOMATED EXECUTION ENGINE ---
+            # EXECUTION LOGIC
             if st.session_state.bot_running:
                 # BUY (OPEN LONG)
                 if signal == "BUY" and st.session_state.balance >= trade_amount_eur:
@@ -284,10 +354,9 @@ def automated_trading_engine():
                     })
                     executed_any_trade = True
 
-                # SHORT (OPEN SHORT POSITION)
+                # SHORT (OPEN SHORT)
                 elif signal == "SHORT" and st.session_state.balance >= trade_amount_eur:
                     coins_shorted = trade_amount_eur / current_price
-                    # Reserve collateral for the short position
                     st.session_state.balance -= trade_amount_eur
                     st.session_state.short_holdings[symbol] = coins_shorted
                     st.session_state.entry_prices[symbol] = current_price
@@ -302,11 +371,10 @@ def automated_trading_engine():
                     })
                     executed_any_trade = True
 
-                # COVER (CLOSE SHORT POSITION)
+                # COVER (CLOSE SHORT)
                 elif signal == "COVER" and short_qty > 0:
                     cost_to_buy_back = short_qty * current_price
                     net_pnl = trade_amount_eur - cost_to_buy_back
-                    # Return collateral + profit or minus loss
                     st.session_state.balance += (trade_amount_eur + net_pnl)
                     
                     st.session_state.short_holdings[symbol] = 0.0
@@ -325,7 +393,7 @@ def automated_trading_engine():
     if executed_any_trade:
         save_portfolio()
 
-    # --- RANKING / SORTING LOGIC ---
+    # SORTING LOGIC
     if sort_order == "Price (High to Low)":
         market_summary.sort(key=lambda x: x['raw_price'], reverse=True)
     elif sort_order == "Price (Low to High)":
@@ -333,15 +401,13 @@ def automated_trading_engine():
     elif sort_order == "Alphabetical":
         market_summary.sort(key=lambda x: x['Asset'])
 
-    # Display Live Prices Table
-    st.subheader("📊 Live Market & Signals Overview")
+    st.subheader("📊 Live Technical Analysis & Signal Overview")
     if market_summary:
         display_df = pd.DataFrame(market_summary).drop(columns=['raw_price'])
         st.dataframe(display_df, use_container_width=True)
     else:
-        st.warning("Fetching market data from Kraken...")
+        st.warning("Fetching candle data from Kraken...")
 
-    # Trade History Log
     st.subheader("📋 Multi-Asset Trade Log")
     if len(st.session_state.trade_history) > 0:
         st.table(pd.DataFrame(st.session_state.trade_history).iloc[::-1])
