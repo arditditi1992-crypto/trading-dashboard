@@ -8,7 +8,7 @@ import os
 
 st.set_page_config(page_title="24/7 Universal Crypto AI Bot", layout="wide")
 
-st.title("🤖 24/7 Universal Crypto AI Bot")
+st.title("🤖 24/7 Universal Crypto AI Bot (Long & Short)")
 
 PORTFOLIO_FILE = "portfolio.json"
 
@@ -22,8 +22,9 @@ def load_portfolio():
             pass
     return {
         "balance": 1000.0,
-        "holdings": {},
-        "buy_prices": {},  # Stores average buy price per coin
+        "holdings": {},      # Long holdings (units)
+        "short_holdings": {},# Short holdings (units)
+        "entry_prices": {},  # Entry price per coin
         "trade_history": []
     }
 
@@ -31,7 +32,8 @@ def save_portfolio():
     data = {
         "balance": st.session_state.balance,
         "holdings": st.session_state.holdings,
-        "buy_prices": st.session_state.buy_prices,
+        "short_holdings": st.session_state.short_holdings,
+        "entry_prices": st.session_state.entry_prices,
         "trade_history": st.session_state.trade_history
     }
     with open(PORTFOLIO_FILE, "w") as f:
@@ -42,7 +44,8 @@ if 'balance' not in st.session_state:
     saved_data = load_portfolio()
     st.session_state.balance = saved_data.get("balance", 1000.0)
     st.session_state.holdings = saved_data.get("holdings", {})
-    st.session_state.buy_prices = saved_data.get("buy_prices", {})
+    st.session_state.short_holdings = saved_data.get("short_holdings", {})
+    st.session_state.entry_prices = saved_data.get("entry_prices", {})
     st.session_state.trade_history = saved_data.get("trade_history", [])
 
 if 'bot_running' not in st.session_state:
@@ -88,7 +91,7 @@ with sb_col2:
         ["Price (High to Low)", "Price (Low to High)", "Alphabetical"]
     )
 
-st.sidebar.subheader("🎯 Profit Protection")
+st.sidebar.subheader("🎯 Profit & Protection")
 take_profit_pct = st.sidebar.slider("Min Take Profit (%)", min_value=0.5, max_value=10.0, value=1.5, step=0.5)
 stop_loss_pct = st.sidebar.slider("Stop Loss (%)", min_value=1.0, max_value=15.0, value=3.0, step=0.5)
 
@@ -102,7 +105,8 @@ selected_symbols = st.sidebar.multiselect(
 if st.sidebar.button("🔄 Reset Portfolio Balance (€1,000)"):
     st.session_state.balance = 1000.0
     st.session_state.holdings = {}
-    st.session_state.buy_prices = {}
+    st.session_state.short_holdings = {}
+    st.session_state.entry_prices = {}
     st.session_state.trade_history = []
     save_portfolio()
     st.sidebar.success("Portfolio reset!")
@@ -110,8 +114,10 @@ if st.sidebar.button("🔄 Reset Portfolio Balance (€1,000)"):
 for sym in selected_symbols:
     if sym not in st.session_state.holdings:
         st.session_state.holdings[sym] = 0.0
-    if sym not in st.session_state.buy_prices:
-        st.session_state.buy_prices[sym] = 0.0
+    if sym not in st.session_state.short_holdings:
+        st.session_state.short_holdings[sym] = 0.0
+    if sym not in st.session_state.entry_prices:
+        st.session_state.entry_prices[sym] = 0.0
 
 # --- PAUSE / RESUME MASTER BUTTONS ---
 col_start, col_stop = st.columns(2)
@@ -155,34 +161,41 @@ def get_batch_prices(symbols):
             
     return prices
 
-# --- SMART SIGNAL ENGINE ---
+# --- SMART SIGNAL ENGINE (LONG & SHORT) ---
 def analyze_market_signal(symbol, current_price):
-    holding = st.session_state.holdings.get(symbol, 0.0)
-    avg_buy = st.session_state.buy_prices.get(symbol, 0.0)
+    long_qty = st.session_state.holdings.get(symbol, 0.0)
+    short_qty = st.session_state.short_holdings.get(symbol, 0.0)
+    entry_price = st.session_state.entry_prices.get(symbol, 0.0)
 
     if current_price <= 0:
         return "HOLD", "Invalid Price"
 
-    # IF WE HOLD THE COIN: CHECK PROFIT / STOP-LOSS RULES FIRST
-    if holding > 0 and avg_buy > 0:
-        gain_loss_pct = ((current_price - avg_buy) / avg_buy) * 100.0
+    # 1. EVALUATE OPEN LONG POSITION
+    if long_qty > 0 and entry_price > 0:
+        pnl_pct = ((current_price - entry_price) / entry_price) * 100.0
+        if pnl_pct >= take_profit_pct:
+            return "SELL", f"Long Take-Profit Hit (+{pnl_pct:.2f}%)"
+        if pnl_pct <= -stop_loss_pct:
+            return "SELL", f"Long Stop-Loss Triggered ({pnl_pct:.2f}%)"
+        return "HOLD", f"Holding Long ({pnl_pct:+.2f}%)"
 
-        if gain_loss_pct >= take_profit_pct:
-            return "SELL", f"Take Profit Target Hit (+{gain_loss_pct:.2f}%)"
-        
-        if gain_loss_pct <= -stop_loss_pct:
-            return "SELL", f"Stop-Loss Triggered ({gain_loss_pct:.2f}%)"
-        
-        return "HOLD", f"Holding (P/L: {gain_loss_pct:+.2f}%)"
+    # 2. EVALUATE OPEN SHORT POSITION
+    if short_qty > 0 and entry_price > 0:
+        # Profit on Short = Price Decreases
+        pnl_pct = ((entry_price - current_price) / entry_price) * 100.0
+        if pnl_pct >= take_profit_pct:
+            return "COVER", f"Short Take-Profit Hit (+{pnl_pct:.2f}%)"
+        if pnl_pct <= -stop_loss_pct:
+            return "COVER", f"Short Stop-Loss Triggered ({pnl_pct:.2f}%)"
+        return "HOLD", f"Holding Short ({pnl_pct:+.2f}%)"
 
-    # IF WE DO NOT HOLD THE COIN: LOOK FOR BUY OPPORTUNITY
-    if holding == 0:
-        # Mock sentiment/RSI filter logic: dip buying pattern
-        rsi_mock = np.random.uniform(25, 75)
-        if rsi_mock < 40:
-            return "BUY", "Oversold Signal (Buying Dip)"
-        else:
-            return "HOLD", "Waiting for Price Dip"
+    # 3. IF NO OPEN POSITIONS: CHECK BUY (LONG) OR SHORT SIGNALS
+    rsi_mock = np.random.uniform(15, 85)
+
+    if rsi_mock < 35:
+        return "BUY", "Oversold Signal (Buying Dip)"
+    elif rsi_mock > 65:
+        return "SHORT", "Overbought Signal (Shorting Peak)"
 
     return "HOLD", "Neutral Market"
 
@@ -205,73 +218,110 @@ def automated_trading_engine():
         
         if current_price > 0:
             signal, reason = analyze_market_signal(symbol, current_price)
-            holding = st.session_state.holdings.get(symbol, 0.0)
-            avg_buy = st.session_state.buy_prices.get(symbol, 0.0)
+            long_qty = st.session_state.holdings.get(symbol, 0.0)
+            short_qty = st.session_state.short_holdings.get(symbol, 0.0)
+            entry_price = st.session_state.entry_prices.get(symbol, 0.0)
 
-            # Calculate current P/L percentage
+            # Determine position type & P/L calculation
+            position_type = "NONE"
             pl_str = "0.00%"
-            if holding > 0 and avg_buy > 0:
-                pl_val = ((current_price - avg_buy) / avg_buy) * 100
+
+            if long_qty > 0 and entry_price > 0:
+                position_type = f"LONG ({long_qty:.4f})"
+                pl_val = ((current_price - entry_price) / entry_price) * 100
                 pl_str = f"{pl_val:+.2f}%"
-            
+            elif short_qty > 0 and entry_price > 0:
+                position_type = f"SHORT ({short_qty:.4f})"
+                pl_val = ((entry_price - current_price) / entry_price) * 100
+                pl_str = f"{pl_val:+.2f}%"
+
             market_summary.append({
                 "raw_price": current_price,
                 "Asset": symbol,
                 "Price": f"€{current_price:,.2f}",
-                "Holdings": f"{holding:.4f}",
-                "Avg Buy Price": f"€{avg_buy:,.2f}" if avg_buy > 0 else "-",
+                "Position": position_type,
+                "Entry Price": f"€{entry_price:,.2f}" if entry_price > 0 else "-",
                 "Current P/L": pl_str,
                 "Signal": signal,
                 "Reason": reason
             })
 
-            # --- PROFIT-GUARDED TRADE EXECUTION ---
+            # --- AUTOMATED EXECUTION ENGINE ---
             if st.session_state.bot_running:
-                # BUY: Only if cash is available and signal says BUY
+                # BUY (OPEN LONG)
                 if signal == "BUY" and st.session_state.balance >= trade_amount_eur:
                     coins_bought = trade_amount_eur / current_price
                     st.session_state.balance -= trade_amount_eur
-                    
-                    # Update holdings and weighted average buy price
-                    total_coins = holding + coins_bought
-                    if total_coins > 0:
-                        st.session_state.buy_prices[symbol] = current_price
-                    st.session_state.holdings[symbol] = total_coins
+                    st.session_state.holdings[symbol] = coins_bought
+                    st.session_state.entry_prices[symbol] = current_price
                     
                     st.session_state.trade_history.append({
                         'Time': time.strftime('%H:%M:%S'),
                         'Asset': symbol,
-                        'Type': 'BUY',
+                        'Type': 'BUY (LONG)',
                         'Price': f"€{current_price:,.2f}",
                         'Value': f"€{trade_amount_eur:.2f}",
-                        'Amount': f"{coins_bought:.4f}",
                         'Note': reason
                     })
                     executed_any_trade = True
 
-                # SELL: Only triggered when Take-Profit or Stop-Loss target is reached
-                elif signal == "SELL" and holding > 0:
-                    eur_received = holding * current_price
+                # SELL (CLOSE LONG)
+                elif signal == "SELL" and long_qty > 0:
+                    eur_received = long_qty * current_price
                     st.session_state.balance += eur_received
-                    sold_amount = holding
-                    
-                    profit_loss = eur_received - (holding * avg_buy)
+                    net_pnl = eur_received - trade_amount_eur
                     
                     st.session_state.holdings[symbol] = 0.0
-                    st.session_state.buy_prices[symbol] = 0.0
+                    st.session_state.entry_prices[symbol] = 0.0
                     
                     st.session_state.trade_history.append({
                         'Time': time.strftime('%H:%M:%S'),
                         'Asset': symbol,
-                        'Type': 'SELL',
+                        'Type': 'SELL (CLOSE LONG)',
                         'Price': f"€{current_price:,.2f}",
                         'Value': f"€{eur_received:.2f}",
-                        'Amount': f"{sold_amount:.4f}",
-                        'Note': f"{reason} | Net: €{profit_loss:+.2f}"
+                        'Note': f"{reason} | Net: €{net_pnl:+.2f}"
                     })
                     executed_any_trade = True
 
-    # Save state if trades occurred
+                # SHORT (OPEN SHORT POSITION)
+                elif signal == "SHORT" and st.session_state.balance >= trade_amount_eur:
+                    coins_shorted = trade_amount_eur / current_price
+                    # Reserve collateral for the short position
+                    st.session_state.balance -= trade_amount_eur
+                    st.session_state.short_holdings[symbol] = coins_shorted
+                    st.session_state.entry_prices[symbol] = current_price
+                    
+                    st.session_state.trade_history.append({
+                        'Time': time.strftime('%H:%M:%S'),
+                        'Asset': symbol,
+                        'Type': 'SHORT (OPEN)',
+                        'Price': f"€{current_price:,.2f}",
+                        'Value': f"€{trade_amount_eur:.2f}",
+                        'Note': reason
+                    })
+                    executed_any_trade = True
+
+                # COVER (CLOSE SHORT POSITION)
+                elif signal == "COVER" and short_qty > 0:
+                    cost_to_buy_back = short_qty * current_price
+                    net_pnl = trade_amount_eur - cost_to_buy_back
+                    # Return collateral + profit or minus loss
+                    st.session_state.balance += (trade_amount_eur + net_pnl)
+                    
+                    st.session_state.short_holdings[symbol] = 0.0
+                    st.session_state.entry_prices[symbol] = 0.0
+                    
+                    st.session_state.trade_history.append({
+                        'Time': time.strftime('%H:%M:%S'),
+                        'Asset': symbol,
+                        'Type': 'COVER (CLOSE SHORT)',
+                        'Price': f"€{current_price:,.2f}",
+                        'Value': f"€{(trade_amount_eur + net_pnl):.2f}",
+                        'Note': f"{reason} | Net: €{net_pnl:+.2f}"
+                    })
+                    executed_any_trade = True
+
     if executed_any_trade:
         save_portfolio()
 
