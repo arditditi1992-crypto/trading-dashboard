@@ -102,7 +102,7 @@ rsi_overbought = st.sidebar.slider("RSI Overbought (Short Threshold)", 55, 85, 7
 selected_symbols = st.sidebar.multiselect(
     f"Select Trading Pairs ({len(ALL_KRAKEN_PAIRS)} Available)",
     options=ALL_KRAKEN_PAIRS,
-    default=["XBTEUR", "ETHEUR", "SOLEUR", "XRPEUR", "ADAEUR"]
+    default=["BTCEUR", "ETHEUR", "SOLEUR", "XRPEUR", "ADAEUR"]
 )
 
 # Reset Button
