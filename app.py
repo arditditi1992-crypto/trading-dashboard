@@ -4,13 +4,50 @@ import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 import requests
 import time
+import json
+import os
 
 st.set_page_config(page_title="24/7 Universal Crypto AI Bot", layout="wide")
 
 st.title("🤖 24/7 Universal Crypto AI Bot")
 
-# --- FETCH ALL KRAKEN EUR PAIRS DYNAMICALLY ---
-@st.cache_data(ttl=3600)  # Caches for 1 hour so it loads fast
+PORTFOLIO_FILE = "portfolio.json"
+
+# --- HELPER FUNCTIONS TO LOAD & SAVE PORTFOLIO ---
+def load_portfolio():
+    if os.path.exists(PORTFOLIO_FILE):
+        try:
+            with open(PORTFOLIO_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {
+        "balance": 1000.0,
+        "holdings": {},
+        "trade_history": []
+    }
+
+def save_portfolio():
+    data = {
+        "balance": st.session_state.balance,
+        "holdings": st.session_state.holdings,
+        "trade_history": st.session_state.trade_history
+    }
+    with open(PORTFOLIO_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+# --- INITIALIZE PERSISTENT STATE ---
+if 'balance' not in st.session_state:
+    saved_data = load_portfolio()
+    st.session_state.balance = saved_data.get("balance", 1000.0)
+    st.session_state.holdings = saved_data.get("holdings", {})
+    st.session_state.trade_history = saved_data.get("trade_history", [])
+
+if 'bot_running' not in st.session_state:
+    st.session_state.bot_running = True
+
+# --- FETCH ALL KRAKEN EUR PAIRS ---
+@st.cache_data(ttl=3600)
 def get_kraken_eur_pairs():
     try:
         url = "https://api.kraken.com/0/public/AssetPairs"
@@ -29,20 +66,9 @@ def get_kraken_eur_pairs():
 
 ALL_KRAKEN_PAIRS, PAIR_MAP = get_kraken_eur_pairs()
 
-# --- INITIALIZE PORTFOLIO & BOT CONTROL STATE ---
-if 'balance' not in st.session_state:
-    st.session_state.balance = 1000.0  # Cash balance (€1,000)
-if 'holdings' not in st.session_state:
-    st.session_state.holdings = {}
-if 'trade_history' not in st.session_state:
-    st.session_state.trade_history = []
-if 'bot_running' not in st.session_state:
-    st.session_state.bot_running = True
-
-# --- SIDEBAR CONFIGURATION (WITH ADDED SIDEBAR COLUMNS) ---
+# --- SIDEBAR CONFIGURATION ---
 st.sidebar.header("⚙️ Bot Settings")
 
-# Added 2 columns directly inside the sidebar menu (>> bar)
 sb_col1, sb_col2 = st.sidebar.columns(2)
 
 with sb_col1:
@@ -66,7 +92,13 @@ selected_symbols = st.sidebar.multiselect(
     default=["XBTEUR", "ETHEUR", "SOLEUR", "XRPEUR", "ADAEUR"]
 )
 
-trade_mode = st.sidebar.radio("Mode", ["Simulation (Paper)", "Live Trading"])
+# Reset Button to start fresh paper portfolio if desired
+if st.sidebar.button("🔄 Reset Portfolio Balance (€1,000)"):
+    st.session_state.balance = 1000.0
+    st.session_state.holdings = {}
+    st.session_state.trade_history = []
+    save_portfolio()
+    st.sidebar.success("Portfolio reset!")
 
 for sym in selected_symbols:
     if sym not in st.session_state.holdings:
@@ -143,6 +175,7 @@ def automated_trading_engine():
 
     prices = get_batch_prices(selected_symbols)
     market_summary = []
+    executed_any_trade = False
     
     for symbol in selected_symbols:
         current_price = prices.get(symbol, 0.0)
@@ -174,6 +207,7 @@ def automated_trading_engine():
                         'Value': f"€{trade_amount_eur:.2f}",
                         'Amount': f"{coins_bought:.4f}"
                     })
+                    executed_any_trade = True
 
                 elif signal == "SELL" and holding > 0:
                     eur_received = holding * current_price
@@ -189,6 +223,11 @@ def automated_trading_engine():
                         'Value': f"€{eur_received:.2f}",
                         'Amount': f"{sold_amount:.4f}"
                     })
+                    executed_any_trade = True
+
+    # Save portfolio to file if any trade changed state
+    if executed_any_trade:
+        save_portfolio()
 
     # --- RANKING / SORTING LOGIC ---
     if sort_order == "Price (High to Low)":
