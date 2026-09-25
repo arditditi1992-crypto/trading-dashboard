@@ -247,21 +247,17 @@ def analyze_market_signal(symbol, data):
 
     # 2. SHORT PROTECTION RULES (Avoid shorting into 1h Bull Rallies)
     if data['macro_trend'] == "BULLISH":
-        # In a 1h Bull Market, ONLY short if RSI peaked AND MACD crossed downward (Double Confirmation)
         if rsi_turning_down and macd_bearish_cross:
             return price, "SHORT", f"Bull-Market Short Reversal (RSI: {data['rsi']:.1f} + MACD Cross)"
     else:
-        # In a 1h Bear Market, take Shorts easily when RSI is Overbought and turning down
         if (data['rsi'] >= rsi_overbought or rsi_turning_down) and (data['macd'] < data['macd_signal'] or price >= data['bb_upper']):
             return price, "SHORT", f"Trend-Aligned Short (1h Bearish | RSI: {data['rsi']:.1f})"
 
     # 3. BUY SIGNALS
     if data['macro_trend'] == "BULLISH":
-        # In a 1h Bull Market, buy dips when 5m RSI is low or turning up
         if (data['rsi'] <= rsi_oversold or rsi_turning_up) and (data['macd'] > data['macd_signal'] or price <= data['bb_lower']):
             return price, "BUY", f"Trend-Aligned Buy Dip (1h Bullish | RSI: {data['rsi']:.1f})"
     else:
-        # In a 1h Bear Market, require strict RSI Oversold + Bullish MACD Crossover to Buy
         if rsi_turning_up and macd_bullish_cross:
             return price, "BUY", f"Bear-Market Reversal Buy (RSI: {data['rsi']:.1f} + MACD Cross)"
 
@@ -298,7 +294,7 @@ def render_engine():
             elif short_qty > 0 and entry_price > 0:
                 position_type = f"SHORT ({short_qty:.4f})"
                 pl_val = ((entry_price - current_price) / entry_price) * 100
-                pl_str = f"{pl_str:+.2f}%"
+                pl_str = f"{pl_val:+.2f}%"
 
             market_summary.append({
                 "raw_price": current_price,
