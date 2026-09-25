@@ -51,11 +51,27 @@ if 'balance' not in st.session_state:
 if 'bot_running' not in st.session_state:
     st.session_state.bot_running = True
 
-# --- MASTER PAIRS LIST ---
-ALL_BINANCE_PAIRS = [
-    "BTCEUR", "ETHEUR", "SOLEUR", "XRPEUR", "ADAEUR", 
-    "DOGEEUR", "AVAXEUR", "LINKEUR", "DOTEUR", "MATICEUR"
-]
+# --- MASTER PAIRS LIST (DYNAMIC) ---
+@st.cache_data(ttl=3600)
+def fetch_all_eur_pairs():
+    """Fetches all currently active EUR trading pairs from Binance."""
+    try:
+        url = "https://data-api.binance.vision/api/v3/exchangeInfo"
+        res = requests.get(url, timeout=10).json()
+        
+        pairs = []
+        for symbol_data in res.get("symbols", []):
+            # Only add the pair if it is currently trading and ends with EUR
+            if symbol_data.get("status") == "TRADING" and symbol_data.get("symbol", "").endswith("EUR"):
+                pairs.append(symbol_data.get("symbol"))
+                
+        return sorted(pairs) if pairs else ["BTCEUR", "ETHEUR"] # Fallback if empty
+        
+    except Exception as e:
+        st.error(f"Failed to load master coin list: {e}")
+        return ["BTCEUR", "ETHEUR", "SOLEUR", "XRPEUR", "ADAEUR"] # Fallback on error
+
+ALL_BINANCE_PAIRS = fetch_all_eur_pairs()
 
 # --- SIDEBAR CONFIGURATION ---
 st.sidebar.header("⚙️ Bot Settings")
@@ -85,10 +101,14 @@ st.sidebar.subheader("📊 Technical Indicator Sensitivity")
 rsi_oversold = st.sidebar.slider("RSI Oversold (Buy Threshold)", 15, 45, 30, 1)
 rsi_overbought = st.sidebar.slider("RSI Overbought (Short Threshold)", 55, 85, 70, 1)
 
+# Safely set default selections based on availability
+default_pairs = ["BTCEUR", "ETHEUR", "SOLEUR", "XRPEUR", "ADAEUR"]
+valid_defaults = [p for p in default_pairs if p in ALL_BINANCE_PAIRS]
+
 selected_symbols = st.sidebar.multiselect(
     f"Select Trading Pairs ({len(ALL_BINANCE_PAIRS)} Available)",
     options=ALL_BINANCE_PAIRS,
-    default=["BTCEUR", "ETHEUR", "SOLEUR", "XRPEUR", "ADAEUR"]
+    default=valid_defaults
 )
 
 # Reset Button
