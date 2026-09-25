@@ -9,12 +9,21 @@ import concurrent.futures
 
 st.set_page_config(page_title="24/7 Universal Crypto AI Bot", layout="wide")
 
-# CSS to eliminate Streamlit's fade-out animation overlay
+# Force Streamlit containers to stay at 100% opacity during fragments/reruns
 st.markdown("""
     <style>
-    .stApp [data-testid="stHeader"] { background: transparent; }
-    div[data-testid="stElementContainer"] { transition: none !important; }
-    div[data-testid="stDataFrame"] { transition: none !important; }
+    /* Disable element dimming/fading during fragment reruns */
+    [data-testid="stVerticalBlock"] > div,
+    [data-testid="stElementContainer"],
+    [data-testid="stDataFrame"],
+    .stApp div[aria-busy="true"] {
+        opacity: 1 !important;
+        transition: none !important;
+        filter: none !important;
+    }
+    
+    /* Hide top loading bar & spinners */
+    div[data-testid="stStatusWidget"] { display: none !important; }
     .stSpinner { display: none !important; }
     </style>
 """, unsafe_allow_html=True)
@@ -158,8 +167,8 @@ if st.session_state.bot_running:
 else:
     st.warning("🔴 STATUS: BOT IS PAUSED")
 
-# --- CACHED NETWORK FETCH WITH TTL TO ELIMINATE UI DELAYS ---
-@st.cache_data(ttl=10, show_spinner=False)
+# --- FAST CANDLE FETCH WITH SHORT TTL CACHE ---
+@st.cache_data(ttl=8, show_spinner=False)
 def fetch_ta_data_cached(symbol, interval="5m"):
     try:
         formatted_symbol = symbol.replace("/", "").replace("-", "").upper()
@@ -268,16 +277,14 @@ def analyze_market_signal(symbol, data):
 
     return price, "HOLD", f"Neutral (RSI: {data['rsi']:.1f} | MACD Neutral)"
 
-# --- MAIN RENDER CONTAINER ---
-ui_box = st.empty()
-
+# --- STATIC CONTAINER RENDERING ---
 @st.fragment(run_every="10s")
 def render_engine():
     if not selected_symbols:
-        ui_box.info("Select trading pairs in the sidebar to start live monitoring.")
+        st.info("Select trading pairs in the sidebar to start live monitoring.")
         return
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
         ta_data_list = list(executor.map(fetch_ta_data_cached, selected_symbols))
 
     market_summary = []
@@ -391,22 +398,20 @@ def render_engine():
     elif sort_order == "Alphabetical":
         market_summary.sort(key=lambda x: x['Asset'])
 
-    # Single atomic render block inside the placeholder wrapper
-    with ui_box.container():
-        st.metric("Total Cash Balance", f"${st.session_state.balance:,.2f} USDT")
-        st.caption(f"🔄 Last Scan: {time.strftime('%H:%M:%S')} | Active Pairs: **{len(selected_symbols)}**")
-        
-        st.subheader("📊 Live Technical Analysis & Signal Overview")
-        if market_summary:
-            display_df = pd.DataFrame(market_summary).drop(columns=['raw_price'])
-            st.dataframe(display_df, use_container_width=True)
-        else:
-            st.warning("Fetching candle data from Binance...")
+    st.metric("Total Cash Balance", f"${st.session_state.balance:,.2f} USDT")
+    st.caption(f"🔄 Last Scan: {time.strftime('%H:%M:%S')} | Active Pairs: **{len(selected_symbols)}**")
+    
+    st.subheader("📊 Live Technical Analysis & Signal Overview")
+    if market_summary:
+        display_df = pd.DataFrame(market_summary).drop(columns=['raw_price'])
+        st.dataframe(display_df, use_container_width=True)
+    else:
+        st.warning("Fetching candle data from Binance...")
 
-        st.subheader("📋 Multi-Asset Trade Log")
-        if len(st.session_state.trade_history) > 0:
-            st.table(pd.DataFrame(st.session_state.trade_history).iloc[::-1])
-        else:
-            st.info("No trades logged yet.")
+    st.subheader("📋 Multi-Asset Trade Log")
+    if len(st.session_state.trade_history) > 0:
+        st.table(pd.DataFrame(st.session_state.trade_history).iloc[::-1])
+    else:
+        st.info("No trades logged yet.")
 
 render_engine()
