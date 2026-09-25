@@ -9,7 +9,16 @@ import concurrent.futures
 
 st.set_page_config(page_title="24/7 Universal Crypto AI Bot", layout="wide")
 
-st.title("🤖 24/7 Crypto AI Bot (Top 100 Volume Engine)")
+# CSS snippet to explicitly disable loading/fading overlay across Streamlit components
+st.markdown("""
+    <style>
+    div[data-testid="stForm"] { border: none; }
+    .stApp [data-testid="stHeader"] { background: transparent; }
+    .element-container { transition: none !important; }
+    </style>
+""", unsafe_allow_html=True)
+
+st.title("🤖 24/7 Crypto AI Bot (Smooth Instant Refresh)")
 
 PORTFOLIO_FILE = "portfolio.json"
 
@@ -63,7 +72,6 @@ def fetch_top_100_usdt_pairs():
         usdt_pairs = []
         for ticker in res:
             symbol = ticker.get("symbol", "")
-            # Filter for active trading USDT spot pairs (excluding leveraged tokens if any)
             if symbol.endswith("USDT") and not any(x in symbol for x in ["UPUSDT", "DOWNUSDT", "BEARUSDT", "BULLUSDT"]):
                 try:
                     quote_volume = float(ticker.get("quoteVolume", 0))
@@ -71,7 +79,6 @@ def fetch_top_100_usdt_pairs():
                 except ValueError:
                     continue
         
-        # Sort by 24h quote volume descending and slice top 100
         usdt_pairs.sort(key=lambda x: x[1], reverse=True)
         top_100 = [item[0] for item in usdt_pairs[:100]]
         
@@ -110,7 +117,7 @@ st.sidebar.subheader("📊 Technical Indicator Sensitivity")
 rsi_oversold = st.sidebar.slider("RSI Oversold (Buy Threshold)", 15, 45, 30, 1)
 rsi_overbought = st.sidebar.slider("RSI Overbought (Short Threshold)", 55, 85, 70, 1)
 
-default_pairs = ALL_BINANCE_PAIRS[:20]  # Pre-select top 20 by default for optimal performance
+default_pairs = ALL_BINANCE_PAIRS[:20]
 
 selected_symbols = st.sidebar.multiselect(
     f"Select Trading Pairs ({len(ALL_BINANCE_PAIRS)} High-Volume Coins Available)",
@@ -152,11 +159,14 @@ if st.session_state.bot_running:
 else:
     st.warning("🔴 STATUS: BOT IS PAUSED")
 
+# --- PLACEHOLDERS TO PREVENT SCREEN DIMMING / GREYING OUT ---
+metric_placeholder = st.empty()
+status_placeholder = st.empty()
+table_placeholder = st.empty()
+history_placeholder = st.empty()
+
 # --- FETCH REAL BINANCE OHLC CANDLES & COMPUTE TA INDICATORS ---
 def fetch_ta_data(symbol, interval="5m"):
-    """
-    Pure network fetcher optimized with thread timeout safety.
-    """
     try:
         formatted_symbol = symbol.replace("/", "").replace("-", "").upper()
         url = f"https://data-api.binance.vision/api/v3/klines?symbol={formatted_symbol}&interval={interval}&limit=100"
@@ -218,7 +228,6 @@ def fetch_ta_data(symbol, interval="5m"):
 
 # --- MULTI-INDICATOR SIGNAL ENGINE ---
 def analyze_market_signal(symbol, data):
-    """Evaluates trading signals using fetched data and current session state."""
     if not data:
         return 0.0, "HOLD", "Data Unavailable"
 
@@ -227,7 +236,7 @@ def analyze_market_signal(symbol, data):
     short_qty = st.session_state.short_holdings.get(symbol, 0.0)
     entry_price = st.session_state.entry_prices.get(symbol, 0.0)
 
-    # 1. RISK CONTROL FIRST (OPEN POSITIONS)
+    # 1. RISK CONTROL FIRST
     if long_qty > 0 and entry_price > 0:
         pnl_pct = ((price - entry_price) / entry_price) * 100.0
         if pnl_pct >= take_profit_pct:
@@ -268,23 +277,25 @@ def analyze_market_signal(symbol, data):
     return price, "HOLD", f"Neutral (RSI: {data['rsi']:.1f} | MACD Neutral)"
 
 # --- AUTOMATED ENGINE FRAGMENT ---
-@st.fragment(run_every="20s")
+@st.fragment(run_every="15s")
 def automated_trading_engine():
-    st.metric("Total Cash Balance", f"${st.session_state.balance:,.2f} USDT")
-    st.caption(f"🔄 Last Scan: {time.strftime('%H:%M:%S')} | Active Pairs: **{len(selected_symbols)}**")
+    # Update balance inside placeholder without whole page flash
+    with metric_placeholder.container():
+        st.metric("Total Cash Balance", f"${st.session_state.balance:,.2f} USDT")
+
+    with status_placeholder.container():
+        st.caption(f"🔄 Last Scan: {time.strftime('%H:%M:%S')} | Active Pairs: **{len(selected_symbols)}**")
     
     if not selected_symbols:
-        st.info("Select trading pairs in the sidebar to start live monitoring.")
+        table_placeholder.info("Select trading pairs in the sidebar to start live monitoring.")
         return
 
     market_summary = []
     executed_any_trade = False
 
-    # Parallel HTTP fetching across background threads with concurrency limits
     with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
         ta_data_list = list(executor.map(fetch_ta_data, selected_symbols))
 
-    # Signal calculation on main Streamlit thread
     for symbol, ta_data in zip(selected_symbols, ta_data_list):
         current_price, signal, reason = analyze_market_signal(symbol, ta_data)
         
@@ -396,18 +407,21 @@ def automated_trading_engine():
     elif sort_order == "Alphabetical":
         market_summary.sort(key=lambda x: x['Asset'])
 
-    st.subheader("📊 Live Technical Analysis & Signal Overview")
-    if market_summary:
-        display_df = pd.DataFrame(market_summary).drop(columns=['raw_price'])
-        st.dataframe(display_df, use_container_width=True)
-    else:
-        st.warning("Fetching candle data from Binance...")
+    # Render table values inside st.empty container seamlessly
+    with table_placeholder.container():
+        st.subheader("📊 Live Technical Analysis & Signal Overview")
+        if market_summary:
+            display_df = pd.DataFrame(market_summary).drop(columns=['raw_price'])
+            st.dataframe(display_df, use_container_width=True)
+        else:
+            st.warning("Fetching candle data from Binance...")
 
-    st.subheader("📋 Multi-Asset Trade Log")
-    if len(st.session_state.trade_history) > 0:
-        st.table(pd.DataFrame(st.session_state.trade_history).iloc[::-1])
-    else:
-        st.info("No trades logged yet.")
+    with history_placeholder.container():
+        st.subheader("📋 Multi-Asset Trade Log")
+        if len(st.session_state.trade_history) > 0:
+            st.table(pd.DataFrame(st.session_state.trade_history).iloc[::-1])
+        else:
+            st.info("No trades logged yet.")
 
-# Launch loop
+# Launch non-flickering loop
 automated_trading_engine()
