@@ -136,7 +136,7 @@ def fetch_ta_data(symbol, interval="5m"):
     try:
         formatted_symbol = symbol.replace("/", "").replace("-", "").upper()
 
-        url = f"https://api.binance.com/api/v3/klines?symbol={formatted_symbol}&interval={interval}&limit=100"
+        url = f"https://data-api.binance.vision/api/v3/klines?symbol={formatted_symbol}&interval={interval}&limit=100"
         res = requests.get(url, timeout=10).json()
         
         if isinstance(res, dict) and "code" in res:
