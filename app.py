@@ -29,33 +29,7 @@ PORTFOLIO_FILE = "portfolio.json"
 
 @st.cache_data(ttl=1800)
 def fetch_top_usdt_pairs():
-    # Endpoints to try if main Binance blocks US cloud servers
-    endpoints = [
-        "https://api.binance.com/api/v3/ticker/24hr",
-        "https://data-api.binance.vision/api/v3/ticker/24hr",
-        "https://api.binance.us/api/v3/ticker/24hr"
-    ]
-    for url in endpoints:
-        try:
-            res = requests.get(url, timeout=5).json()
-            if isinstance(res, list):
-                usdt_pairs = []
-                excluded = ["UPUSDT", "DOWNUSDT", "BEARUSDT", "BULLUSDT", "NVDAB", "AAPLB", "TSLAB"]
-                for ticker in res:
-                    symbol = ticker.get("symbol", "")
-                    if symbol.endswith("USDT") and not any(x in symbol for x in excluded):
-                        try:
-                            vol = float(ticker.get("quoteVolume", 0))
-                            usdt_pairs.append((symbol, vol))
-                        except ValueError:
-                            continue
-                usdt_pairs.sort(key=lambda x: x[1], reverse=True)
-                top_pairs = [item[0] for item in usdt_pairs[:50]]
-                if top_pairs:
-                    return top_pairs
-        except Exception:
-            continue
-            
+    # Return fixed liquid market pairs that work cross-exchange
     return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "BNBUSDT", "AVAXUSDT"]
 
 ALL_BINANCE_PAIRS = fetch_top_usdt_pairs()
@@ -194,107 +168,114 @@ if st.session_state.bot_running:
 else:
     st.warning("🔴 STATUS: BOT PAUSED")
 
-# --- TA DATA FETCHING WITH FALLBACK ENDPOINTS ---
-@st.cache_data(ttl=12, show_spinner=False)
+# --- ROBUST MULTI-PROVIDER TA DATA FETCHING ---
+@st.cache_data(ttl=10, show_spinner=False)
 def fetch_ta_data_cached(symbol):
-    formatted_symbol = symbol.replace("/", "").replace("-", "").upper()
+    base_asset = symbol.replace("USDT", "").replace("USD", "").lower()
     
-    # Try multiple domain mirrors to bypass regional/cloud IP blocks
-    base_urls = [
-        "https://api.binance.com",
-        "https://data-api.binance.vision",
-        "https://api.binance.us"
-    ]
-
-    res_5m = None
-    for base in base_urls:
-        try:
-            url_5m = f"{base}/api/v3/klines?symbol={formatted_symbol}&interval=5m&limit=50"
-            r = requests.get(url_5m, timeout=3.0)
-            if r.status_code == 200:
-                data = r.json()
-                if isinstance(data, list) and len(data) >= 30:
-                    res_5m = data
-                    break
-        except Exception:
-            continue
-
-    if res_5m is None:
-        return None
-
+    # Provider 1: CoinCap API (Cloud Friendly, No Regional Block)
     try:
-        df_5m = pd.DataFrame(res_5m, columns=['time', 'open', 'high', 'low', 'close', 'volume', 'ct', 'qav', 'nt', 'tba', 'tbq', 'ig'])
-        df_5m['close'] = df_5m['close'].astype(float)
-        df_5m['volume'] = df_5m['volume'].astype(float)
+        asset_map = {"btc": "bitcoin", "eth": "ethereum", "sol": "solana", "xrp": "ripple", "ada": "cardano", "doge": "dogecoin", "bnb": "binance-coin", "avax": "avalanche"}
+        slug = asset_map.get(base_asset, base_asset)
+        
+        url = f"https://api.coincap.io/v2/assets/{slug}/history?interval=m5"
+        r = requests.get(url, timeout=3.0)
+        if r.status_code == 200:
+            data = r.json().get('data', [])
+            if len(data) >= 30:
+                df = pd.DataFrame(data)
+                df['close'] = df['priceUsd'].astype(float)
+                df['volume'] = df['volumeUsd24Hr'].astype(float) / 288.0
 
-        delta = df_5m['close'].diff()
-        gain = delta.clip(lower=0)
-        loss = -delta.clip(upper=0)
-        avg_gain = gain.rolling(window=14).mean()
-        avg_loss = loss.rolling(window=14).mean()
-        rs = avg_gain / (avg_loss + 1e-10)
-        df_5m['rsi'] = 100 - (100 / (1 + rs))
+                delta = df['close'].diff()
+                gain = delta.clip(lower=0)
+                loss = -delta.clip(upper=0)
+                avg_gain = gain.rolling(window=14).mean()
+                avg_loss = loss.rolling(window=14).mean()
+                rs = avg_gain / (avg_loss + 1e-10)
+                df['rsi'] = 100 - (100 / (1 + rs))
 
-        ema12 = df_5m['close'].ewm(span=12, adjust=False).mean()
-        ema26 = df_5m['close'].ewm(span=26, adjust=False).mean()
-        df_5m['macd'] = ema12 - ema26
-        df_5m['macd_signal'] = df_5m['macd'].ewm(span=9, adjust=False).mean()
+                ema12 = df['close'].ewm(span=12, adjust=False).mean()
+                ema26 = df['close'].ewm(span=26, adjust=False).mean()
+                df['macd'] = ema12 - ema26
+                df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
 
-        sma20 = df_5m['close'].rolling(window=20).mean()
-        std20 = df_5m['close'].rolling(window=20).std()
-        df_5m['bb_upper'] = sma20 + (2 * std20)
-        df_5m['bb_lower'] = sma20 - (2 * std20)
-        df_5m['vol_ma20'] = df_5m['volume'].rolling(window=20).mean()
+                sma20 = df['close'].rolling(window=20).mean()
+                std20 = df['close'].rolling(window=20).std()
+                df['bb_upper'] = sma20 + (2 * std20)
+                df['bb_lower'] = sma20 - (2 * std20)
+                df['vol_ma20'] = df['volume'].rolling(window=20).mean()
 
-        latest_5m = df_5m.iloc[-1]
-        prev_5m = df_5m.iloc[-2]
+                latest = df.iloc[-1]
+                prev = df.iloc[-2]
 
-        # 1-Hour candle fetch
-        res_1h = None
-        for base in base_urls:
-            try:
-                url_1h = f"{base}/api/v3/klines?symbol={formatted_symbol}&interval=1h&limit=50"
-                r = requests.get(url_1h, timeout=3.0)
-                if r.status_code == 200:
-                    data = r.json()
-                    if isinstance(data, list) and len(data) >= 30:
-                        res_1h = data
-                        break
-            except Exception:
-                continue
-
-        macro_trend = "NEUTRAL"
-        macro_ema20 = 0.0
-        if res_1h is not None:
-            df_1h = pd.DataFrame(res_1h, columns=['time', 'open', 'high', 'low', 'close', 'volume', 'ct', 'qav', 'nt', 'tba', 'tbq', 'ig'])
-            df_1h['close'] = df_1h['close'].astype(float)
-            df_1h['ema20'] = df_1h['close'].ewm(span=20, adjust=False).mean()
-            df_1h['ema50'] = df_1h['close'].ewm(span=50, adjust=False).mean()
-            
-            latest_1h = df_1h.iloc[-1]
-            macro_ema20 = float(latest_1h['ema20'])
-            if float(latest_1h['close']) > float(latest_1h['ema50']):
-                macro_trend = "BULLISH"
-            else:
-                macro_trend = "BEARISH"
-
-        return {
-            "current_price": float(latest_5m['close']),
-            "rsi": float(latest_5m['rsi']),
-            "prev_rsi": float(prev_5m['rsi']),
-            "macd": float(latest_5m['macd']),
-            "macd_signal": float(latest_5m['macd_signal']),
-            "prev_macd": float(prev_5m['macd']),
-            "prev_macd_signal": float(prev_5m['macd_signal']),
-            "bb_lower": float(latest_5m['bb_lower']),
-            "bb_upper": float(latest_5m['bb_upper']),
-            "volume_spike": float(latest_5m['volume']) >= (float(latest_5m['vol_ma20']) * st.session_state.vol_multiplier),
-            "macro_trend": macro_trend,
-            "macro_ema20": macro_ema20
-        }
-
+                return {
+                    "current_price": float(latest['close']),
+                    "rsi": float(latest['rsi']),
+                    "prev_rsi": float(prev['rsi']),
+                    "macd": float(latest['macd']),
+                    "macd_signal": float(latest['macd_signal']),
+                    "prev_macd": float(prev['macd']),
+                    "prev_macd_signal": float(prev['macd_signal']),
+                    "bb_lower": float(latest['bb_lower']),
+                    "bb_upper": float(latest['bb_upper']),
+                    "volume_spike": float(latest['volume']) >= (float(latest['vol_ma20']) * st.session_state.vol_multiplier),
+                    "macro_trend": "BULLISH" if float(latest['close']) > float(sma20.iloc[-1]) else "BEARISH",
+                    "macro_ema20": float(sma20.iloc[-1])
+                }
     except Exception:
-        return None
+        pass
+
+    # Provider 2: Binance (Direct Backup)
+    try:
+        url_5m = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=5m&limit=50"
+        r = requests.get(url_5m, timeout=3.0)
+        if r.status_code == 200:
+            res_5m = r.json()
+            df_5m = pd.DataFrame(res_5m, columns=['time', 'open', 'high', 'low', 'close', 'volume', 'ct', 'qav', 'nt', 'tba', 'tbq', 'ig'])
+            df_5m['close'] = df_5m['close'].astype(float)
+            df_5m['volume'] = df_5m['volume'].astype(float)
+
+            delta = df_5m['close'].diff()
+            gain = delta.clip(lower=0)
+            loss = -delta.clip(upper=0)
+            avg_gain = gain.rolling(window=14).mean()
+            avg_loss = loss.rolling(window=14).mean()
+            rs = avg_gain / (avg_loss + 1e-10)
+            df_5m['rsi'] = 100 - (100 / (1 + rs))
+
+            ema12 = df_5m['close'].ewm(span=12, adjust=False).mean()
+            ema26 = df_5m['close'].ewm(span=26, adjust=False).mean()
+            df_5m['macd'] = ema12 - ema26
+            df_5m['macd_signal'] = df_5m['macd'].ewm(span=9, adjust=False).mean()
+
+            sma20 = df_5m['close'].rolling(window=20).mean()
+            std20 = df_5m['close'].rolling(window=20).std()
+            df_5m['bb_upper'] = sma20 + (2 * std20)
+            df_5m['bb_lower'] = sma20 - (2 * std20)
+            df_5m['vol_ma20'] = df_5m['volume'].rolling(window=20).mean()
+
+            latest_5m = df_5m.iloc[-1]
+            prev_5m = df_5m.iloc[-2]
+
+            return {
+                "current_price": float(latest_5m['close']),
+                "rsi": float(latest_5m['rsi']),
+                "prev_rsi": float(prev_5m['rsi']),
+                "macd": float(latest_5m['macd']),
+                "macd_signal": float(latest_5m['macd_signal']),
+                "prev_macd": float(prev_5m['macd']),
+                "prev_macd_signal": float(prev_5m['macd_signal']),
+                "bb_lower": float(latest_5m['bb_lower']),
+                "bb_upper": float(latest_5m['bb_upper']),
+                "volume_spike": float(latest_5m['volume']) >= (float(latest_5m['vol_ma20']) * st.session_state.vol_multiplier),
+                "macro_trend": "BULLISH",
+                "macro_ema20": 0.0
+            }
+    except Exception:
+        pass
+
+    return None
 
 # --- SIGNAL ENGINE ---
 def analyze_market_signal(symbol, data):
@@ -469,7 +450,7 @@ def render_engine():
         display_df = pd.DataFrame(market_summary).drop(columns=['raw_price'])
         st.dataframe(display_df, use_container_width=True)
     else:
-        st.warning("Fetching candle data from Binance...")
+        st.warning("Fetching candle data from public market APIs...")
 
     st.subheader("📋 Multi-Asset Trade Log")
     if len(st.session_state.trade_history) > 0:
