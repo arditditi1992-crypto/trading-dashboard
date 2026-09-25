@@ -52,25 +52,25 @@ if 'balance' not in st.session_state:
 if 'bot_running' not in st.session_state:
     st.session_state.bot_running = True
 
-# --- MASTER PAIRS LIST (DYNAMIC) ---
+# --- MASTER PAIRS LIST (DYNAMIC USDT PAIRS) ---
 @st.cache_data(ttl=3600)
-def fetch_all_eur_pairs():
-    """Fetches all currently active EUR trading pairs from Binance."""
+def fetch_all_usdt_pairs():
+    """Fetches all currently active USDT trading pairs from Binance."""
     try:
         url = "https://data-api.binance.vision/api/v3/exchangeInfo"
         res = requests.get(url, timeout=10).json()
         
         pairs = []
         for symbol_data in res.get("symbols", []):
-            if symbol_data.get("status") == "TRADING" and symbol_data.get("symbol", "").endswith("EUR"):
+            if symbol_data.get("status") == "TRADING" and symbol_data.get("symbol", "").endswith("USDT"):
                 pairs.append(symbol_data.get("symbol"))
                 
-        return sorted(pairs) if pairs else ["BTCEUR", "ETHEUR"]
+        return sorted(pairs) if pairs else ["BTCUSDT", "ETHUSDT"]
         
     except Exception:
-        return ["BTCEUR", "ETHEUR", "SOLEUR", "XRPEUR", "ADAEUR"]
+        return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT"]
 
-ALL_BINANCE_PAIRS = fetch_all_eur_pairs()
+ALL_BINANCE_PAIRS = fetch_all_usdt_pairs()
 
 # --- SIDEBAR CONFIGURATION ---
 st.sidebar.header("⚙️ Bot Settings")
@@ -78,8 +78,8 @@ st.sidebar.header("⚙️ Bot Settings")
 sb_col1, sb_col2 = st.sidebar.columns(2)
 
 with sb_col1:
-    trade_amount_eur = st.sidebar.number_input(
-        "Trade Size (€)", 
+    trade_amount_usdt = st.sidebar.number_input(
+        "Trade Size ($ USDT)", 
         min_value=5.0, 
         max_value=500.0, 
         value=10.0, 
@@ -100,7 +100,7 @@ st.sidebar.subheader("📊 Technical Indicator Sensitivity")
 rsi_oversold = st.sidebar.slider("RSI Oversold (Buy Threshold)", 15, 45, 30, 1)
 rsi_overbought = st.sidebar.slider("RSI Overbought (Short Threshold)", 55, 85, 70, 1)
 
-default_pairs = ["BTCEUR", "ETHEUR", "SOLEUR", "XRPEUR", "ADAEUR"]
+default_pairs = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT"]
 valid_defaults = [p for p in default_pairs if p in ALL_BINANCE_PAIRS]
 
 selected_symbols = st.sidebar.multiselect(
@@ -109,7 +109,7 @@ selected_symbols = st.sidebar.multiselect(
     default=valid_defaults
 )
 
-if st.sidebar.button("🔄 Reset Portfolio (€1,000)"):
+if st.sidebar.button("🔄 Reset Portfolio ($1,000 USDT)"):
     st.session_state.balance = 1000.0
     st.session_state.holdings = {}
     st.session_state.short_holdings = {}
@@ -262,7 +262,7 @@ def analyze_market_signal(symbol, data):
 # --- AUTOMATED ENGINE FRAGMENT ---
 @st.fragment(run_every="10s")
 def automated_trading_engine():
-    st.metric("Total Cash Balance", f"€{st.session_state.balance:,.2f}")
+    st.metric("Total Cash Balance", f"${st.session_state.balance:,.2f} USDT")
     st.caption(f"🔄 Last Scan: {time.strftime('%H:%M:%S')} | Active Pairs: **{len(selected_symbols)}**")
     
     if not selected_symbols:
@@ -300,9 +300,9 @@ def automated_trading_engine():
             market_summary.append({
                 "raw_price": current_price,
                 "Asset": symbol,
-                "Price": f"€{current_price:,.2f}",
+                "Price": f"${current_price:,.4f}" if current_price < 1 else f"${current_price:,.2f}",
                 "Position": position_type,
-                "Entry Price": f"€{entry_price:,.2f}" if entry_price > 0 else "-",
+                "Entry Price": f"${entry_price:,.2f}" if entry_price > 0 else "-",
                 "Current P/L": pl_str,
                 "Signal": signal,
                 "Reason": reason
@@ -310,9 +310,9 @@ def automated_trading_engine():
 
             # EXECUTION LOGIC
             if st.session_state.bot_running:
-                if signal == "BUY" and st.session_state.balance >= trade_amount_eur:
-                    coins_bought = trade_amount_eur / current_price
-                    st.session_state.balance -= trade_amount_eur
+                if signal == "BUY" and st.session_state.balance >= trade_amount_usdt:
+                    coins_bought = trade_amount_usdt / current_price
+                    st.session_state.balance -= trade_amount_usdt
                     st.session_state.holdings[symbol] = coins_bought
                     st.session_state.entry_prices[symbol] = current_price
                     
@@ -320,16 +320,16 @@ def automated_trading_engine():
                         'Time': time.strftime('%H:%M:%S'),
                         'Asset': symbol,
                         'Type': 'BUY (LONG)',
-                        'Price': f"€{current_price:,.2f}",
-                        'Value': f"€{trade_amount_eur:.2f}",
+                        'Price': f"${current_price:,.2f}",
+                        'Value': f"${trade_amount_usdt:.2f}",
                         'Note': reason
                     })
                     executed_any_trade = True
 
                 elif signal == "SELL" and long_qty > 0:
-                    eur_received = long_qty * current_price
-                    st.session_state.balance += eur_received
-                    net_pnl = eur_received - trade_amount_eur
+                    usdt_received = long_qty * current_price
+                    st.session_state.balance += usdt_received
+                    net_pnl = usdt_received - trade_amount_usdt
                     
                     st.session_state.holdings[symbol] = 0.0
                     st.session_state.entry_prices[symbol] = 0.0
@@ -338,15 +338,15 @@ def automated_trading_engine():
                         'Time': time.strftime('%H:%M:%S'),
                         'Asset': symbol,
                         'Type': 'SELL (CLOSE LONG)',
-                        'Price': f"€{current_price:,.2f}",
-                        'Value': f"€{eur_received:.2f}",
-                        'Note': f"{reason} | Net: €{net_pnl:+.2f}"
+                        'Price': f"${current_price:,.2f}",
+                        'Value': f"${usdt_received:.2f}",
+                        'Note': f"{reason} | Net: ${net_pnl:+.2f}"
                     })
                     executed_any_trade = True
 
-                elif signal == "SHORT" and st.session_state.balance >= trade_amount_eur:
-                    coins_shorted = trade_amount_eur / current_price
-                    st.session_state.balance -= trade_amount_eur
+                elif signal == "SHORT" and st.session_state.balance >= trade_amount_usdt:
+                    coins_shorted = trade_amount_usdt / current_price
+                    st.session_state.balance -= trade_amount_usdt
                     st.session_state.short_holdings[symbol] = coins_shorted
                     st.session_state.entry_prices[symbol] = current_price
                     
@@ -354,16 +354,16 @@ def automated_trading_engine():
                         'Time': time.strftime('%H:%M:%S'),
                         'Asset': symbol,
                         'Type': 'SHORT (OPEN)',
-                        'Price': f"€{current_price:,.2f}",
-                        'Value': f"€{trade_amount_eur:.2f}",
+                        'Price': f"${current_price:,.2f}",
+                        'Value': f"${trade_amount_usdt:.2f}",
                         'Note': reason
                     })
                     executed_any_trade = True
 
                 elif signal == "COVER" and short_qty > 0:
                     cost_to_buy_back = short_qty * current_price
-                    net_pnl = trade_amount_eur - cost_to_buy_back
-                    st.session_state.balance += (trade_amount_eur + net_pnl)
+                    net_pnl = trade_amount_usdt - cost_to_buy_back
+                    st.session_state.balance += (trade_amount_usdt + net_pnl)
                     
                     st.session_state.short_holdings[symbol] = 0.0
                     st.session_state.entry_prices[symbol] = 0.0
@@ -372,9 +372,9 @@ def automated_trading_engine():
                         'Time': time.strftime('%H:%M:%S'),
                         'Asset': symbol,
                         'Type': 'COVER (CLOSE SHORT)',
-                        'Price': f"€{current_price:,.2f}",
-                        'Value': f"€{(trade_amount_eur + net_pnl):.2f}",
-                        'Note': f"{reason} | Net: €{net_pnl:+.2f}"
+                        'Price': f"${current_price:,.2f}",
+                        'Value': f"${(trade_amount_usdt + net_pnl):.2f}",
+                        'Note': f"{reason} | Net: ${net_pnl:+.2f}"
                     })
                     executed_any_trade = True
 
