@@ -68,7 +68,7 @@ def load_portfolio():
         "stop_loss_pct": 2.5,
         "rsi_oversold": 30,
         "rsi_overbought": 72,
-        "selected_symbols": ALL_BINANCE_PAIRS[:20],
+        "selected_symbols": ALL_BINANCE_PAIRS[:15],
         "allow_shorts": True,
         "vol_multiplier": 1.3
     }
@@ -105,7 +105,7 @@ if 'balance' not in st.session_state:
     st.session_state.stop_loss_pct = saved_data.get("stop_loss_pct", 2.5)
     st.session_state.rsi_oversold = saved_data.get("rsi_oversold", 30)
     st.session_state.rsi_overbought = saved_data.get("rsi_overbought", 72)
-    st.session_state.selected_symbols = saved_data.get("selected_symbols", ALL_BINANCE_PAIRS[:20])
+    st.session_state.selected_symbols = saved_data.get("selected_symbols", ALL_BINANCE_PAIRS[:15])
     st.session_state.allow_shorts = saved_data.get("allow_shorts", True)
     st.session_state.vol_multiplier = saved_data.get("vol_multiplier", 1.3)
 
@@ -167,7 +167,7 @@ if st.sidebar.button("🔄 Reset Portfolio ($1,000 USDT)"):
     st.session_state.rsi_overbought = 72
     st.session_state.allow_shorts = True
     st.session_state.vol_multiplier = 1.3
-    st.session_state.selected_symbols = ALL_BINANCE_PAIRS[:20]
+    st.session_state.selected_symbols = ALL_BINANCE_PAIRS[:15]
     save_portfolio()
     st.sidebar.success("Portfolio reset!")
     st.rerun()
@@ -193,15 +193,15 @@ if st.session_state.bot_running:
 else:
     st.warning("🔴 STATUS: BOT PAUSED")
 
-# --- TA DATA FETCHING WITH VOLUME & ATR ---
-@st.cache_data(ttl=8, show_spinner=False)
+# --- TA DATA FETCHING WITH SAFELOCKS ---
+@st.cache_data(ttl=12, show_spinner=False)
 def fetch_ta_data_cached(symbol):
     try:
         formatted_symbol = symbol.replace("/", "").replace("-", "").upper()
 
-        url_5m = f"https://data-api.binance.vision/api/v3/klines?symbol={formatted_symbol}&interval=5m&limit=100"
-        res_5m = requests.get(url_5m, timeout=2.5).json()
-        if isinstance(res_5m, dict) and "code" in res_5m: return None
+        url_5m = f"https://data-api.binance.vision/api/v3/klines?symbol={formatted_symbol}&interval=5m&limit=50"
+        res_5m = requests.get(url_5m, timeout=3.5).json()
+        if isinstance(res_5m, dict) or not isinstance(res_5m, list): return None
 
         df_5m = pd.DataFrame(res_5m, columns=['time', 'open', 'high', 'low', 'close', 'volume', 'ct', 'qav', 'nt', 'tba', 'tbq', 'ig'])
         df_5m['close'] = df_5m['close'].astype(float)
@@ -228,15 +228,13 @@ def fetch_ta_data_cached(symbol):
         std20 = df_5m['close'].rolling(window=20).std()
         df_5m['bb_upper'] = sma20 + (2 * std20)
         df_5m['bb_lower'] = sma20 - (2 * std20)
-
-        # Volume Confirmation
         df_5m['vol_ma20'] = df_5m['volume'].rolling(window=20).mean()
 
         latest_5m = df_5m.iloc[-1]
         prev_5m = df_5m.iloc[-2]
 
-        url_1h = f"https://data-api.binance.vision/api/v3/klines?symbol={formatted_symbol}&interval=1h&limit=100"
-        res_1h = requests.get(url_1h, timeout=2.5).json()
+        url_1h = f"https://data-api.binance.vision/api/v3/klines?symbol={formatted_symbol}&interval=1h&limit=50"
+        res_1h = requests.get(url_1h, timeout=3.5).json()
         
         macro_trend = "NEUTRAL"
         macro_ema20 = 0.0
@@ -260,7 +258,7 @@ def fetch_ta_data_cached(symbol):
             "macd": float(latest_5m['macd']),
             "macd_signal": float(latest_5m['macd_signal']),
             "prev_macd": float(prev_5m['macd']),
-            "prev_macd_signal": float(prev_5m['prev_macd_signal'] if 'prev_macd_signal' in prev_5m else prev_5m['macd_signal']),
+            "prev_macd_signal": float(prev_5m['macd_signal']),
             "bb_lower": float(latest_5m['bb_lower']),
             "bb_upper": float(latest_5m['bb_upper']),
             "volume_spike": float(latest_5m['volume']) >= (float(latest_5m['vol_ma20']) * st.session_state.vol_multiplier),
@@ -271,7 +269,7 @@ def fetch_ta_data_cached(symbol):
     except Exception:
         return None
 
-# --- ENHANCED SIGNAL ENGINE WITH STRICT SHORT RULES ---
+# --- SIGNAL ENGINE ---
 def analyze_market_signal(symbol, data):
     if not data:
         return 0.0, "HOLD", "Data Unavailable"
@@ -301,9 +299,7 @@ def analyze_market_signal(symbol, data):
 
     # 2. STRICT SHORTING FILTER
     if st.session_state.allow_shorts:
-        # STRICT CONDITION 1: NEVER Short in a 1h Bull Market
         if data['macro_trend'] != "BULLISH":
-            # STRICT CONDITION 2: Must be overbought + have volume confirmation + price rejected at upper BB
             if (data['rsi'] >= st.session_state.rsi_overbought or rsi_turning_down):
                 if macd_bearish_cross and data['volume_spike']:
                     return price, "SHORT", f"High-Volume Bearish Reversal (RSI: {data['rsi']:.1f})"
@@ -327,7 +323,8 @@ def render_engine():
         st.info("Select trading pairs in the sidebar.")
         return
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
+    # Use max 12 workers to stay under Binance public rate limits
+    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
         ta_data_list = list(executor.map(fetch_ta_data_cached, st.session_state.selected_symbols))
 
     market_summary = []
@@ -447,7 +444,7 @@ def render_engine():
         display_df = pd.DataFrame(market_summary).drop(columns=['raw_price'])
         st.dataframe(display_df, use_container_width=True)
     else:
-        st.warning("Fetching multi-timeframe candle data from Binance...")
+        st.warning("Fetching multi-timeframe candle data from Binance... (If stuck, lower Active Pairs in sidebar to 15-20 pairs)")
 
     st.subheader("📋 Multi-Asset Trade Log")
     if len(st.session_state.trade_history) > 0:
