@@ -9,7 +9,6 @@ import concurrent.futures
 
 st.set_page_config(page_title="24/7 Multi-Timeframe Crypto AI Bot", layout="wide")
 
-# Disable element dimming/fading during fragment reruns
 st.markdown("""
     <style>
     [data-testid="stVerticalBlock"] > div,
@@ -25,11 +24,10 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🤖 24/7 Crypto AI Bot (Multi-Timeframe Trend Engine)")
+st.title("🤖 24/7 Crypto AI Bot (Enhanced Short Guard Edition)")
 
 PORTFOLIO_FILE = "portfolio.json"
 
-# --- FETCH TOP 100 USDT PAIRS BY VOLUME ---
 @st.cache_data(ttl=1800)
 def fetch_top_100_usdt_pairs():
     try:
@@ -52,7 +50,6 @@ def fetch_top_100_usdt_pairs():
 
 ALL_BINANCE_PAIRS = fetch_top_100_usdt_pairs()
 
-# --- HELPER FUNCTIONS FOR PERSISTENT STATE ---
 def load_portfolio():
     if os.path.exists(PORTFOLIO_FILE):
         try:
@@ -68,10 +65,12 @@ def load_portfolio():
         "trade_history": [],
         "trade_amount_usdt": 10.0,
         "take_profit_pct": 1.5,
-        "stop_loss_pct": 3.0,
+        "stop_loss_pct": 2.5,
         "rsi_oversold": 30,
-        "rsi_overbought": 70,
-        "selected_symbols": ALL_BINANCE_PAIRS[:20]
+        "rsi_overbought": 72,
+        "selected_symbols": ALL_BINANCE_PAIRS[:20],
+        "allow_shorts": True,
+        "vol_multiplier": 1.3
     }
 
 def save_portfolio():
@@ -86,12 +85,13 @@ def save_portfolio():
         "stop_loss_pct": st.session_state.stop_loss_pct,
         "rsi_oversold": st.session_state.rsi_oversold,
         "rsi_overbought": st.session_state.rsi_overbought,
-        "selected_symbols": st.session_state.selected_symbols
+        "selected_symbols": st.session_state.selected_symbols,
+        "allow_shorts": st.session_state.allow_shorts,
+        "vol_multiplier": st.session_state.vol_multiplier
     }
     with open(PORTFOLIO_FILE, "w") as f:
         json.dump(data, f, indent=4)
 
-# Load saved user settings into session state if first boot
 saved_data = load_portfolio()
 
 if 'balance' not in st.session_state:
@@ -100,19 +100,19 @@ if 'balance' not in st.session_state:
     st.session_state.short_holdings = saved_data.get("short_holdings", {})
     st.session_state.entry_prices = saved_data.get("entry_prices", {})
     st.session_state.trade_history = saved_data.get("trade_history", [])
-    
-    # Save widget settings to session state
     st.session_state.trade_amount_usdt = saved_data.get("trade_amount_usdt", 10.0)
     st.session_state.take_profit_pct = saved_data.get("take_profit_pct", 1.5)
-    st.session_state.stop_loss_pct = saved_data.get("stop_loss_pct", 3.0)
+    st.session_state.stop_loss_pct = saved_data.get("stop_loss_pct", 2.5)
     st.session_state.rsi_oversold = saved_data.get("rsi_oversold", 30)
-    st.session_state.rsi_overbought = saved_data.get("rsi_overbought", 70)
+    st.session_state.rsi_overbought = saved_data.get("rsi_overbought", 72)
     st.session_state.selected_symbols = saved_data.get("selected_symbols", ALL_BINANCE_PAIRS[:20])
+    st.session_state.allow_shorts = saved_data.get("allow_shorts", True)
+    st.session_state.vol_multiplier = saved_data.get("vol_multiplier", 1.3)
 
 if 'bot_running' not in st.session_state:
     st.session_state.bot_running = True
 
-# --- SIDEBAR CONFIGURATION (WITH CALLBACK AUTOSAVE) ---
+# --- SIDEBAR CONFIGURATION ---
 st.sidebar.header("⚙️ Bot Settings")
 sb_col1, sb_col2 = st.sidebar.columns(2)
 
@@ -125,25 +125,27 @@ with sb_col1:
 with sb_col2:
     sort_order = st.sidebar.selectbox("Sort Table By", ["Price (High to Low)", "Price (Low to High)", "Alphabetical"])
 
-st.sidebar.subheader("🎯 Risk & Execution Controls")
+st.sidebar.subheader("🛡️ Short Protection Controls")
+allow_shorts = st.sidebar.checkbox("Enable Short Positions", key="allow_shorts", on_change=save_portfolio)
+vol_multiplier = st.sidebar.slider(
+    "Min Short Vol Spike (x Avg Vol)", min_value=1.0, max_value=3.0, step=0.1,
+    key="vol_multiplier", on_change=save_portfolio,
+    help="Requires recent volume to be X times higher than average to trigger short."
+)
+
+st.sidebar.subheader("🎯 Risk Controls")
 take_profit_pct = st.sidebar.slider(
-    "Min Take Profit (%)", min_value=0.5, max_value=10.0, step=0.5,
+    "Take Profit (%)", min_value=0.5, max_value=10.0, step=0.5,
     key="take_profit_pct", on_change=save_portfolio
 )
 stop_loss_pct = st.sidebar.slider(
-    "Stop Loss (%)", min_value=1.0, max_value=15.0, step=0.5,
+    "Tight Stop Loss (%)", min_value=0.5, max_value=10.0, step=0.5,
     key="stop_loss_pct", on_change=save_portfolio
 )
 
 st.sidebar.subheader("📊 Indicator Thresholds")
-rsi_oversold = st.sidebar.slider(
-    "RSI Oversold (Buy)", 15, 45, step=1,
-    key="rsi_oversold", on_change=save_portfolio
-)
-rsi_overbought = st.sidebar.slider(
-    "RSI Overbought (Short)", 55, 85, step=1,
-    key="rsi_overbought", on_change=save_portfolio
-)
+rsi_oversold = st.sidebar.slider("RSI Oversold (Buy)", 15, 45, step=1, key="rsi_oversold", on_change=save_portfolio)
+rsi_overbought = st.sidebar.slider("RSI Overbought (Short)", 55, 90, step=1, key="rsi_overbought", on_change=save_portfolio)
 
 selected_symbols = st.sidebar.multiselect(
     f"Select Trading Pairs ({len(ALL_BINANCE_PAIRS)} Available)",
@@ -160,9 +162,11 @@ if st.sidebar.button("🔄 Reset Portfolio ($1,000 USDT)"):
     st.session_state.trade_history = []
     st.session_state.trade_amount_usdt = 10.0
     st.session_state.take_profit_pct = 1.5
-    st.session_state.stop_loss_pct = 3.0
+    st.session_state.stop_loss_pct = 2.5
     st.session_state.rsi_oversold = 30
-    st.session_state.rsi_overbought = 70
+    st.session_state.rsi_overbought = 72
+    st.session_state.allow_shorts = True
+    st.session_state.vol_multiplier = 1.3
     st.session_state.selected_symbols = ALL_BINANCE_PAIRS[:20]
     save_portfolio()
     st.sidebar.success("Portfolio reset!")
@@ -185,11 +189,11 @@ with col_stop:
         st.toast("Bot paused.", icon="🔴")
 
 if st.session_state.bot_running:
-    st.success("🟢 STATUS: BOT ACTIVE (5m Execution + 1h Macro Trend Protection)")
+    st.success("🟢 STATUS: BOT ACTIVE (Enhanced Short Protection & Volume Filters)")
 else:
     st.warning("🔴 STATUS: BOT PAUSED")
 
-# --- MULTI-TIMEFRAME TA DATA FETCHING (5m + 1h) ---
+# --- TA DATA FETCHING WITH VOLUME & ATR ---
 @st.cache_data(ttl=8, show_spinner=False)
 def fetch_ta_data_cached(symbol):
     try:
@@ -201,8 +205,10 @@ def fetch_ta_data_cached(symbol):
 
         df_5m = pd.DataFrame(res_5m, columns=['time', 'open', 'high', 'low', 'close', 'volume', 'ct', 'qav', 'nt', 'tba', 'tbq', 'ig'])
         df_5m['close'] = df_5m['close'].astype(float)
+        df_5m['volume'] = df_5m['volume'].astype(float)
         if len(df_5m) < 30: return None
 
+        # RSI calculation
         delta = df_5m['close'].diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
@@ -211,16 +217,20 @@ def fetch_ta_data_cached(symbol):
         rs = avg_gain / (avg_loss + 1e-10)
         df_5m['rsi'] = 100 - (100 / (1 + rs))
 
+        # MACD
         ema12 = df_5m['close'].ewm(span=12, adjust=False).mean()
         ema26 = df_5m['close'].ewm(span=26, adjust=False).mean()
         df_5m['macd'] = ema12 - ema26
         df_5m['macd_signal'] = df_5m['macd'].ewm(span=9, adjust=False).mean()
 
-        df_5m['ema50'] = df_5m['close'].ewm(span=50, adjust=False).mean()
+        # Bollinger Bands & Moving Averages
         sma20 = df_5m['close'].rolling(window=20).mean()
         std20 = df_5m['close'].rolling(window=20).std()
         df_5m['bb_upper'] = sma20 + (2 * std20)
         df_5m['bb_lower'] = sma20 - (2 * std20)
+
+        # Volume Confirmation
+        df_5m['vol_ma20'] = df_5m['volume'].rolling(window=20).mean()
 
         latest_5m = df_5m.iloc[-1]
         prev_5m = df_5m.iloc[-2]
@@ -229,12 +239,15 @@ def fetch_ta_data_cached(symbol):
         res_1h = requests.get(url_1h, timeout=2.5).json()
         
         macro_trend = "NEUTRAL"
+        macro_ema20 = 0.0
         if isinstance(res_1h, list) and len(res_1h) >= 30:
             df_1h = pd.DataFrame(res_1h, columns=['time', 'open', 'high', 'low', 'close', 'volume', 'ct', 'qav', 'nt', 'tba', 'tbq', 'ig'])
             df_1h['close'] = df_1h['close'].astype(float)
+            df_1h['ema20'] = df_1h['close'].ewm(span=20, adjust=False).mean()
             df_1h['ema50'] = df_1h['close'].ewm(span=50, adjust=False).mean()
             
             latest_1h = df_1h.iloc[-1]
+            macro_ema20 = float(latest_1h['ema20'])
             if float(latest_1h['close']) > float(latest_1h['ema50']):
                 macro_trend = "BULLISH"
             else:
@@ -247,17 +260,18 @@ def fetch_ta_data_cached(symbol):
             "macd": float(latest_5m['macd']),
             "macd_signal": float(latest_5m['macd_signal']),
             "prev_macd": float(prev_5m['macd']),
-            "prev_macd_signal": float(prev_5m['macd_signal']),
-            "ema50_5m": float(latest_5m['ema50']),
+            "prev_macd_signal": float(prev_5m['prev_macd_signal'] if 'prev_macd_signal' in prev_5m else prev_5m['macd_signal']),
             "bb_lower": float(latest_5m['bb_lower']),
             "bb_upper": float(latest_5m['bb_upper']),
-            "macro_trend": macro_trend
+            "volume_spike": float(latest_5m['volume']) >= (float(latest_5m['vol_ma20']) * st.session_state.vol_multiplier),
+            "macro_trend": macro_trend,
+            "macro_ema20": macro_ema20
         }
 
     except Exception:
         return None
 
-# --- MULTI-TIMEFRAME SIGNAL ENGINE ---
+# --- ENHANCED SIGNAL ENGINE WITH STRICT SHORT RULES ---
 def analyze_market_signal(symbol, data):
     if not data:
         return 0.0, "HOLD", "Data Unavailable"
@@ -267,6 +281,7 @@ def analyze_market_signal(symbol, data):
     short_qty = st.session_state.short_holdings.get(symbol, 0.0)
     entry_price = st.session_state.entry_prices.get(symbol, 0.0)
 
+    # 1. RISK MANAGEMENT FIRST
     if long_qty > 0 and entry_price > 0:
         pnl_pct = ((price - entry_price) / entry_price) * 100.0
         if pnl_pct >= st.session_state.take_profit_pct: return price, "SELL", f"Long TP (+{pnl_pct:.2f}%)"
@@ -284,13 +299,18 @@ def analyze_market_signal(symbol, data):
     rsi_turning_down = data['prev_rsi'] > st.session_state.rsi_overbought and data['rsi'] < data['prev_rsi']
     rsi_turning_up = data['prev_rsi'] < st.session_state.rsi_oversold and data['rsi'] > data['prev_rsi']
 
-    if data['macro_trend'] == "BULLISH":
-        if rsi_turning_down and macd_bearish_cross:
-            return price, "SHORT", f"Bull-Market Short Reversal (RSI: {data['rsi']:.1f} + MACD Cross)"
-    else:
-        if (data['rsi'] >= st.session_state.rsi_overbought or rsi_turning_down) and (data['macd'] < data['macd_signal'] or price >= data['bb_upper']):
-            return price, "SHORT", f"Trend-Aligned Short (1h Bearish | RSI: {data['rsi']:.1f})"
+    # 2. STRICT SHORTING FILTER
+    if st.session_state.allow_shorts:
+        # STRICT CONDITION 1: NEVER Short in a 1h Bull Market
+        if data['macro_trend'] != "BULLISH":
+            # STRICT CONDITION 2: Must be overbought + have volume confirmation + price rejected at upper BB
+            if (data['rsi'] >= st.session_state.rsi_overbought or rsi_turning_down):
+                if macd_bearish_cross and data['volume_spike']:
+                    return price, "SHORT", f"High-Volume Bearish Reversal (RSI: {data['rsi']:.1f})"
+                elif price >= data['bb_upper'] and data['volume_spike']:
+                    return price, "SHORT", f"Upper BB Breakout Rejection + Vol Spike"
 
+    # 3. BUY SIGNALS
     if data['macro_trend'] == "BULLISH":
         if (data['rsi'] <= st.session_state.rsi_oversold or rsi_turning_up) and (data['macd'] > data['macd_signal'] or price <= data['bb_lower']):
             return price, "BUY", f"Trend-Aligned Buy Dip (1h Bullish | RSI: {data['rsi']:.1f})"
@@ -300,7 +320,7 @@ def analyze_market_signal(symbol, data):
 
     return price, "HOLD", f"Neutral (RSI: {data['rsi']:.1f} | 1h Trend: {data['macro_trend']})"
 
-# --- AUTOMATED ENGINE FRAGMENT ---
+# --- RENDER FRAGMENT ---
 @st.fragment(run_every="10s")
 def render_engine():
     if not st.session_state.selected_symbols:
