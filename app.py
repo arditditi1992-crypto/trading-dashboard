@@ -62,15 +62,13 @@ def fetch_all_eur_pairs():
         
         pairs = []
         for symbol_data in res.get("symbols", []):
-            # Only add the pair if it is currently trading and ends with EUR
             if symbol_data.get("status") == "TRADING" and symbol_data.get("symbol", "").endswith("EUR"):
                 pairs.append(symbol_data.get("symbol"))
                 
-        return sorted(pairs) if pairs else ["BTCEUR", "ETHEUR"] # Fallback if empty
+        return sorted(pairs) if pairs else ["BTCEUR", "ETHEUR"]
         
-    except Exception as e:
-        st.error(f"Failed to load master coin list: {e}")
-        return ["BTCEUR", "ETHEUR", "SOLEUR", "XRPEUR", "ADAEUR"] # Fallback on error
+    except Exception:
+        return ["BTCEUR", "ETHEUR", "SOLEUR", "XRPEUR", "ADAEUR"]
 
 ALL_BINANCE_PAIRS = fetch_all_eur_pairs()
 
@@ -102,7 +100,6 @@ st.sidebar.subheader("📊 Technical Indicator Sensitivity")
 rsi_oversold = st.sidebar.slider("RSI Oversold (Buy Threshold)", 15, 45, 30, 1)
 rsi_overbought = st.sidebar.slider("RSI Overbought (Short Threshold)", 55, 85, 70, 1)
 
-# Safely set default selections based on availability
 default_pairs = ["BTCEUR", "ETHEUR", "SOLEUR", "XRPEUR", "ADAEUR"]
 valid_defaults = [p for p in default_pairs if p in ALL_BINANCE_PAIRS]
 
@@ -112,7 +109,6 @@ selected_symbols = st.sidebar.multiselect(
     default=valid_defaults
 )
 
-# Reset Button
 if st.sidebar.button("🔄 Reset Portfolio (€1,000)"):
     st.session_state.balance = 1000.0
     st.session_state.holdings = {}
@@ -130,7 +126,6 @@ for sym in selected_symbols:
     if sym not in st.session_state.entry_prices:
         st.session_state.entry_prices[sym] = 0.0
 
-# --- PAUSE / RESUME MASTER BUTTONS ---
 col_start, col_stop = st.columns(2)
 
 with col_start:
@@ -151,17 +146,15 @@ else:
 # --- FETCH REAL BINANCE OHLC CANDLES & COMPUTE TA INDICATORS ---
 def fetch_ta_data(symbol, interval="5m"):
     """
-    Fetches live 5-minute candles directly from Binance API
-    and calculates RSI, MACD, Moving Averages, and Bollinger Bands.
+    Pure network fetcher for background threads.
+    Does not access Streamlit UI or session state.
     """
     try:
         formatted_symbol = symbol.replace("/", "").replace("-", "").upper()
-
         url = f"https://data-api.binance.vision/api/v3/klines?symbol={formatted_symbol}&interval={interval}&limit=100"
         res = requests.get(url, timeout=10).json()
         
         if isinstance(res, dict) and "code" in res:
-            st.error(f"Binance rejected {symbol}: {res.get('msg', res)}")
             return None
 
         df = pd.DataFrame(res, columns=[
@@ -175,7 +168,6 @@ def fetch_ta_data(symbol, interval="5m"):
         if len(df) < 30:
             return None
 
-        # --- TECHNICAL INDICATOR CALCULATIONS ---
         delta = df['close'].diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
@@ -213,13 +205,12 @@ def fetch_ta_data(symbol, interval="5m"):
             "bb_upper": float(latest['bb_upper'])
         }
 
-    except Exception as e:
-        st.error(f"API Error on {symbol}: {e}")
+    except Exception:
         return None
 
 # --- MULTI-INDICATOR SIGNAL ENGINE ---
-def analyze_market_signal(symbol):
-    data = fetch_ta_data(symbol)
+def analyze_market_signal(symbol, data):
+    """Evaluates trading signals using fetched data and current session state."""
     if not data:
         return 0.0, "HOLD", "Data Unavailable"
 
@@ -245,26 +236,22 @@ def analyze_market_signal(symbol):
             return price, "COVER", f"Short Stop-Loss Triggered ({pnl_pct:.2f}%)"
         return price, "HOLD", f"Holding Short ({pnl_pct:+.2f}%)"
 
-    # 2. ENTRY SIGNALS (COMBINED TA STRATEGY)
-    # Check MACD Bullish / Bearish Crossovers
+    # 2. ENTRY SIGNALS
     macd_bullish_cross = (data['prev_macd'] < data['prev_macd_signal']) and (data['macd'] > data['macd_signal'])
     macd_bearish_cross = (data['prev_macd'] > data['prev_macd_signal']) and (data['macd'] < data['macd_signal'])
 
-    # BUY CONDITIONS
     buy_score = 0
     if data['rsi'] < rsi_oversold: buy_score += 1
     if macd_bullish_cross or data['macd'] > data['macd_signal']: buy_score += 1
     if price <= data['bb_lower']: buy_score += 1
-    if price >= data['ema50']: buy_score += 1  # Bullish trend alignment
+    if price >= data['ema50']: buy_score += 1  
 
-    # SHORT CONDITIONS
     short_score = 0
     if data['rsi'] > rsi_overbought: short_score += 1
     if macd_bearish_cross or data['macd'] < data['macd_signal']: short_score += 1
     if price >= data['bb_upper']: short_score += 1
-    if price <= data['ema50']: short_score += 1  # Bearish trend alignment
+    if price <= data['ema50']: short_score += 1  
 
-    # Signal Threshold (Requires at least 3 matching confirmations)
     if buy_score >= 3:
         return price, "BUY", f"Strong Buy (RSI: {data['rsi']:.1f}, BB Lower Hit, MACD Bullish)"
     elif short_score >= 3:
@@ -284,18 +271,14 @@ def automated_trading_engine():
 
     market_summary = []
     executed_any_trade = False
-    
-    # --- NEW FAST PARALLEL PROCESSING ---
-    def fetch_and_analyze(sym):
-        price, sig, rsn = analyze_market_signal(sym)
-        return sym, price, sig, rsn
 
-    # Fetch all coins simultaneously 
+    # Parallel HTTP fetching across background threads
     with concurrent.futures.ThreadPoolExecutor() as executor:
-        results = list(executor.map(fetch_and_analyze, selected_symbols))
-    
-    # Process the fetched data
-    for symbol, current_price, signal, reason in results:
+        ta_data_list = list(executor.map(fetch_ta_data, selected_symbols))
+
+    # Signal calculation on main Streamlit thread
+    for symbol, ta_data in zip(selected_symbols, ta_data_list):
+        current_price, signal, reason = analyze_market_signal(symbol, ta_data)
         
         if current_price > 0:
             long_qty = st.session_state.holdings.get(symbol, 0.0)
@@ -327,7 +310,6 @@ def automated_trading_engine():
 
             # EXECUTION LOGIC
             if st.session_state.bot_running:
-                # BUY (OPEN LONG)
                 if signal == "BUY" and st.session_state.balance >= trade_amount_eur:
                     coins_bought = trade_amount_eur / current_price
                     st.session_state.balance -= trade_amount_eur
@@ -344,7 +326,6 @@ def automated_trading_engine():
                     })
                     executed_any_trade = True
 
-                # SELL (CLOSE LONG)
                 elif signal == "SELL" and long_qty > 0:
                     eur_received = long_qty * current_price
                     st.session_state.balance += eur_received
@@ -363,7 +344,6 @@ def automated_trading_engine():
                     })
                     executed_any_trade = True
 
-                # SHORT (OPEN SHORT)
                 elif signal == "SHORT" and st.session_state.balance >= trade_amount_eur:
                     coins_shorted = trade_amount_eur / current_price
                     st.session_state.balance -= trade_amount_eur
@@ -380,7 +360,6 @@ def automated_trading_engine():
                     })
                     executed_any_trade = True
 
-                # COVER (CLOSE SHORT)
                 elif signal == "COVER" and short_qty > 0:
                     cost_to_buy_back = short_qty * current_price
                     net_pnl = trade_amount_eur - cost_to_buy_back
@@ -402,7 +381,6 @@ def automated_trading_engine():
     if executed_any_trade:
         save_portfolio()
 
-    # SORTING LOGIC
     if sort_order == "Price (High to Low)":
         market_summary.sort(key=lambda x: x['raw_price'], reverse=True)
     elif sort_order == "Price (Low to High)":
