@@ -9,7 +9,7 @@ import concurrent.futures
 
 st.set_page_config(page_title="24/7 Universal Crypto AI Bot", layout="wide")
 
-# Force Streamlit containers to stay at 100% opacity during fragments/reruns
+# CSS to force 100% opacity during updates and eliminate screen dimming
 st.markdown("""
     <style>
     /* Disable element dimming/fading during fragment reruns */
@@ -22,13 +22,13 @@ st.markdown("""
         filter: none !important;
     }
     
-    /* Hide top loading bar & spinners */
+    /* Hide top loading status bar & spinners */
     div[data-testid="stStatusWidget"] { display: none !important; }
     .stSpinner { display: none !important; }
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🤖 24/7 Crypto AI Bot (Zero-Flash Engine)")
+st.title("🤖 24/7 Crypto AI Bot (Optimized Signal Engine)")
 
 PORTFOLIO_FILE = "portfolio.json"
 
@@ -167,7 +167,7 @@ if st.session_state.bot_running:
 else:
     st.warning("🔴 STATUS: BOT IS PAUSED")
 
-# --- FAST CANDLE FETCH WITH SHORT TTL CACHE ---
+# --- CACHED OHLC FETCH WITH SHORT TTL ---
 @st.cache_data(ttl=8, show_spinner=False)
 def fetch_ta_data_cached(symbol, interval="5m"):
     try:
@@ -229,7 +229,7 @@ def fetch_ta_data_cached(symbol, interval="5m"):
     except Exception:
         return None
 
-# --- SIGNAL ANALYSIS ENGINE ---
+# --- OPTIMIZED SIGNAL ENGINE (EXTREME RSI + 2/4 CONFLUENCE) ---
 def analyze_market_signal(symbol, data):
     if not data:
         return 0.0, "HOLD", "Data Unavailable"
@@ -239,6 +239,7 @@ def analyze_market_signal(symbol, data):
     short_qty = st.session_state.short_holdings.get(symbol, 0.0)
     entry_price = st.session_state.entry_prices.get(symbol, 0.0)
 
+    # 1. RISK CONTROL FIRST (TAKE PROFIT & STOP LOSS)
     if long_qty > 0 and entry_price > 0:
         pnl_pct = ((price - entry_price) / entry_price) * 100.0
         if pnl_pct >= take_profit_pct:
@@ -255,6 +256,13 @@ def analyze_market_signal(symbol, data):
             return price, "COVER", f"Short Stop-Loss Triggered ({pnl_pct:.2f}%)"
         return price, "HOLD", f"Holding Short ({pnl_pct:+.2f}%)"
 
+    # 2. IMMEDIATE EXTREME OVERBOUGHT / OVERSOLD REVERSAL TRIGGER
+    if data['rsi'] >= 78.0:
+        return price, "SHORT", f"Extreme Overbought RSI ({data['rsi']:.1f})"
+    elif data['rsi'] <= 22.0:
+        return price, "BUY", f"Extreme Oversold RSI ({data['rsi']:.1f})"
+
+    # 3. CONFLUENCE EVALUATION (2 OUT OF 4 REQUIRED)
     macd_bullish_cross = (data['prev_macd'] < data['prev_macd_signal']) and (data['macd'] > data['macd_signal'])
     macd_bearish_cross = (data['prev_macd'] > data['prev_macd_signal']) and (data['macd'] < data['macd_signal'])
 
@@ -270,14 +278,14 @@ def analyze_market_signal(symbol, data):
     if price >= data['bb_upper']: short_score += 1
     if price <= data['ema50']: short_score += 1  
 
-    if buy_score >= 3:
-        return price, "BUY", f"Strong Buy (RSI: {data['rsi']:.1f}, BB Lower Hit, MACD Bullish)"
-    elif short_score >= 3:
-        return price, "SHORT", f"Strong Short (RSI: {data['rsi']:.1f}, BB Upper Hit, MACD Bearish)"
+    if buy_score >= 2:
+        return price, "BUY", f"Buy Signal (RSI: {data['rsi']:.1f} | Score: {buy_score}/4)"
+    elif short_score >= 2:
+        return price, "SHORT", f"Short Signal (RSI: {data['rsi']:.1f} | Score: {short_score}/4)"
 
     return price, "HOLD", f"Neutral (RSI: {data['rsi']:.1f} | MACD Neutral)"
 
-# --- STATIC CONTAINER RENDERING ---
+# --- AUTOMATED RENDER FRAGMENT ---
 @st.fragment(run_every="10s")
 def render_engine():
     if not selected_symbols:
@@ -321,6 +329,7 @@ def render_engine():
                 "Reason": reason
             })
 
+            # EXECUTION LOGIC
             if st.session_state.bot_running:
                 if signal == "BUY" and st.session_state.balance >= trade_amount_usdt:
                     coins_bought = trade_amount_usdt / current_price
