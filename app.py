@@ -29,26 +29,28 @@ st.title("🤖 24/7 Crypto AI Bot (Enhanced Short Guard Edition)")
 PORTFOLIO_FILE = "portfolio.json"
 
 @st.cache_data(ttl=1800)
-def fetch_top_100_usdt_pairs():
+def fetch_top_usdt_pairs():
     try:
         url = "https://data-api.binance.vision/api/v3/ticker/24hr"
         res = requests.get(url, timeout=10).json()
         usdt_pairs = []
+        excluded_keywords = ["UPUSDT", "DOWNUSDT", "BEARUSDT", "BULLUSDT", "NVDAB", "AAPLB", "TSLAB"]
+        
         for ticker in res:
             symbol = ticker.get("symbol", "")
-            if symbol.endswith("USDT") and not any(x in symbol for x in ["UPUSDT", "DOWNUSDT", "BEARUSDT", "BULLUSDT"]):
+            if symbol.endswith("USDT") and not any(x in symbol for x in excluded_keywords):
                 try:
                     quote_volume = float(ticker.get("quoteVolume", 0))
                     usdt_pairs.append((symbol, quote_volume))
                 except ValueError:
                     continue
         usdt_pairs.sort(key=lambda x: x[1], reverse=True)
-        top_100 = [item[0] for item in usdt_pairs[:100]]
-        return top_100 if top_100 else ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
+        top_pairs = [item[0] for item in usdt_pairs[:50]]
+        return top_pairs if top_pairs else ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT"]
     except Exception:
         return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT"]
 
-ALL_BINANCE_PAIRS = fetch_top_100_usdt_pairs()
+ALL_BINANCE_PAIRS = fetch_top_usdt_pairs()
 
 def load_portfolio():
     if os.path.exists(PORTFOLIO_FILE):
@@ -75,42 +77,31 @@ def load_portfolio():
 
 def save_portfolio():
     data = {
-        "balance": st.session_state.balance,
-        "holdings": st.session_state.holdings,
-        "short_holdings": st.session_state.short_holdings,
-        "entry_prices": st.session_state.entry_prices,
-        "trade_history": st.session_state.trade_history,
-        "trade_amount_usdt": st.session_state.trade_amount_usdt,
-        "take_profit_pct": st.session_state.take_profit_pct,
-        "stop_loss_pct": st.session_state.stop_loss_pct,
-        "rsi_oversold": st.session_state.rsi_oversold,
-        "rsi_overbought": st.session_state.rsi_overbought,
-        "selected_symbols": st.session_state.selected_symbols,
-        "allow_shorts": st.session_state.allow_shorts,
-        "vol_multiplier": st.session_state.vol_multiplier
+        "balance": st.session_state.get("balance", 1000.0),
+        "holdings": st.session_state.get("holdings", {}),
+        "short_holdings": st.session_state.get("short_holdings", {}),
+        "entry_prices": st.session_state.get("entry_prices", {}),
+        "trade_history": st.session_state.get("trade_history", []),
+        "trade_amount_usdt": st.session_state.get("trade_amount_usdt", 10.0),
+        "take_profit_pct": st.session_state.get("take_profit_pct", 1.5),
+        "stop_loss_pct": st.session_state.get("stop_loss_pct", 2.5),
+        "rsi_oversold": st.session_state.get("rsi_oversold", 30),
+        "rsi_overbought": st.session_state.get("rsi_overbought", 72),
+        "selected_symbols": st.session_state.get("selected_symbols", ALL_BINANCE_PAIRS[:15]),
+        "allow_shorts": st.session_state.get("allow_shorts", True),
+        "vol_multiplier": st.session_state.get("vol_multiplier", 1.3)
     }
     with open(PORTFOLIO_FILE, "w") as f:
         json.dump(data, f, indent=4)
 
 saved_data = load_portfolio()
 
-if 'balance' not in st.session_state:
-    st.session_state.balance = saved_data.get("balance", 1000.0)
-    st.session_state.holdings = saved_data.get("holdings", {})
-    st.session_state.short_holdings = saved_data.get("short_holdings", {})
-    st.session_state.entry_prices = saved_data.get("entry_prices", {})
-    st.session_state.trade_history = saved_data.get("trade_history", [])
-    st.session_state.trade_amount_usdt = saved_data.get("trade_amount_usdt", 10.0)
-    st.session_state.take_profit_pct = saved_data.get("take_profit_pct", 1.5)
-    st.session_state.stop_loss_pct = saved_data.get("stop_loss_pct", 2.5)
-    st.session_state.rsi_oversold = saved_data.get("rsi_oversold", 30)
-    st.session_state.rsi_overbought = saved_data.get("rsi_overbought", 72)
-    st.session_state.selected_symbols = saved_data.get("selected_symbols", ALL_BINANCE_PAIRS[:15])
-    st.session_state.allow_shorts = saved_data.get("allow_shorts", True)
-    st.session_state.vol_multiplier = saved_data.get("vol_multiplier", 1.3)
-
-if 'bot_running' not in st.session_state:
-    st.session_state.bot_running = True
+if 'balance' not in st.session_state: st.session_state.balance = saved_data.get("balance", 1000.0)
+if 'holdings' not in st.session_state: st.session_state.holdings = saved_data.get("holdings", {})
+if 'short_holdings' not in st.session_state: st.session_state.short_holdings = saved_data.get("short_holdings", {})
+if 'entry_prices' not in st.session_state: st.session_state.entry_prices = saved_data.get("entry_prices", {})
+if 'trade_history' not in st.session_state: st.session_state.trade_history = saved_data.get("trade_history", [])
+if 'bot_running' not in st.session_state: st.session_state.bot_running = True
 
 # --- SIDEBAR CONFIGURATION ---
 st.sidebar.header("⚙️ Bot Settings")
@@ -119,72 +110,75 @@ sb_col1, sb_col2 = st.sidebar.columns(2)
 with sb_col1:
     trade_amount_usdt = st.sidebar.number_input(
         "Trade Size ($ USDT)", min_value=5.0, max_value=500.0, step=5.0,
-        key="trade_amount_usdt", on_change=save_portfolio
+        value=float(saved_data.get("trade_amount_usdt", 10.0)),
+        key="trade_amount_usdt_input"
     )
+    st.session_state.trade_amount_usdt = trade_amount_usdt
 
 with sb_col2:
-    sort_order = st.sidebar.selectbox("Sort Table By", ["Price (High to Low)", "Price (Low to High)", "Alphabetical"])
+    sort_order = st.sidebar.selectbox("Sort Table By", ["Price (High to Low)", "Price (Low to High)", "Alphabetical"], key="sort_order_select")
 
 st.sidebar.subheader("🛡️ Short Protection Controls")
-allow_shorts = st.sidebar.checkbox("Enable Short Positions", key="allow_shorts", on_change=save_portfolio)
+allow_shorts = st.sidebar.checkbox("Enable Short Positions", value=saved_data.get("allow_shorts", True), key="allow_shorts_check")
+st.session_state.allow_shorts = allow_shorts
+
 vol_multiplier = st.sidebar.slider(
     "Min Short Vol Spike (x Avg Vol)", min_value=1.0, max_value=3.0, step=0.1,
-    key="vol_multiplier", on_change=save_portfolio,
-    help="Requires recent volume to be X times higher than average to trigger short."
+    value=float(saved_data.get("vol_multiplier", 1.3)),
+    key="vol_multiplier_slider"
 )
+st.session_state.vol_multiplier = vol_multiplier
 
 st.sidebar.subheader("🎯 Risk Controls")
-take_profit_pct = st.sidebar.slider(
-    "Take Profit (%)", min_value=0.5, max_value=10.0, step=0.5,
-    key="take_profit_pct", on_change=save_portfolio
-)
-stop_loss_pct = st.sidebar.slider(
-    "Tight Stop Loss (%)", min_value=0.5, max_value=10.0, step=0.5,
-    key="stop_loss_pct", on_change=save_portfolio
-)
+take_profit_pct = st.sidebar.slider("Take Profit (%)", 0.5, 10.0, float(saved_data.get("take_profit_pct", 1.5)), 0.5, key="tp_slider")
+st.session_state.take_profit_pct = take_profit_pct
+
+stop_loss_pct = st.sidebar.slider("Tight Stop Loss (%)", 0.5, 10.0, float(saved_data.get("stop_loss_pct", 2.5)), 0.5, key="sl_slider")
+st.session_state.stop_loss_pct = stop_loss_pct
 
 st.sidebar.subheader("📊 Indicator Thresholds")
-rsi_oversold = st.sidebar.slider("RSI Oversold (Buy)", 15, 45, step=1, key="rsi_oversold", on_change=save_portfolio)
-rsi_overbought = st.sidebar.slider("RSI Overbought (Short)", 55, 90, step=1, key="rsi_overbought", on_change=save_portfolio)
+rsi_oversold = st.sidebar.slider("RSI Oversold (Buy)", 15, 45, int(saved_data.get("rsi_oversold", 30)), 1, key="rsi_os_slider")
+st.session_state.rsi_oversold = rsi_oversold
 
+rsi_overbought = st.sidebar.slider("RSI Overbought (Short)", 55, 90, int(saved_data.get("rsi_overbought", 72)), 1, key="rsi_ob_slider")
+st.session_state.rsi_overbought = rsi_overbought
+
+# Limit default selection to 15 pairs max
+valid_defaults = [s for s in saved_data.get("selected_symbols", ALL_BINANCE_PAIRS[:15]) if s in ALL_BINANCE_PAIRS]
 selected_symbols = st.sidebar.multiselect(
     f"Select Trading Pairs ({len(ALL_BINANCE_PAIRS)} Available)",
     options=ALL_BINANCE_PAIRS,
-    key="selected_symbols",
-    on_change=save_portfolio
+    default=valid_defaults[:15],
+    key="selected_symbols_multi"
 )
+st.session_state.selected_symbols = selected_symbols
 
-if st.sidebar.button("🔄 Reset Portfolio ($1,000 USDT)"):
+if st.sidebar.button("🔄 Reset Portfolio ($1,000 USDT)", key="reset_btn"):
+    if os.path.exists(PORTFOLIO_FILE):
+        os.remove(PORTFOLIO_FILE)
     st.session_state.balance = 1000.0
     st.session_state.holdings = {}
     st.session_state.short_holdings = {}
     st.session_state.entry_prices = {}
     st.session_state.trade_history = []
-    st.session_state.trade_amount_usdt = 10.0
-    st.session_state.take_profit_pct = 1.5
-    st.session_state.stop_loss_pct = 2.5
-    st.session_state.rsi_oversold = 30
-    st.session_state.rsi_overbought = 72
-    st.session_state.allow_shorts = True
-    st.session_state.vol_multiplier = 1.3
     st.session_state.selected_symbols = ALL_BINANCE_PAIRS[:15]
-    save_portfolio()
-    st.sidebar.success("Portfolio reset!")
     st.rerun()
 
-for sym in selected_symbols:
+save_portfolio()
+
+for sym in st.session_state.selected_symbols:
     if sym not in st.session_state.holdings: st.session_state.holdings[sym] = 0.0
     if sym not in st.session_state.short_holdings: st.session_state.short_holdings[sym] = 0.0
     if sym not in st.session_state.entry_prices: st.session_state.entry_prices[sym] = 0.0
 
 col_start, col_stop = st.columns(2)
 with col_start:
-    if st.button("▶️ START / RESUME BOT", use_container_width=True):
+    if st.button("▶️ START / RESUME BOT", use_container_width=True, key="start_btn"):
         st.session_state.bot_running = True
         st.toast("Bot active!", icon="🟢")
 
 with col_stop:
-    if st.button("⏸️ PAUSE BOT", use_container_width=True):
+    if st.button("⏸️ PAUSE BOT", use_container_width=True, key="stop_btn"):
         st.session_state.bot_running = False
         st.toast("Bot paused.", icon="🔴")
 
@@ -193,14 +187,15 @@ if st.session_state.bot_running:
 else:
     st.warning("🔴 STATUS: BOT PAUSED")
 
-# --- TA DATA FETCHING WITH SAFELOCKS ---
+# --- TA DATA FETCHING ---
 @st.cache_data(ttl=12, show_spinner=False)
 def fetch_ta_data_cached(symbol):
     try:
         formatted_symbol = symbol.replace("/", "").replace("-", "").upper()
 
         url_5m = f"https://data-api.binance.vision/api/v3/klines?symbol={formatted_symbol}&interval=5m&limit=50"
-        res_5m = requests.get(url_5m, timeout=3.5).json()
+        res_5m = requests.get(url_5m, timeout=3.0).json()
+        
         if isinstance(res_5m, dict) or not isinstance(res_5m, list): return None
 
         df_5m = pd.DataFrame(res_5m, columns=['time', 'open', 'high', 'low', 'close', 'volume', 'ct', 'qav', 'nt', 'tba', 'tbq', 'ig'])
@@ -208,7 +203,6 @@ def fetch_ta_data_cached(symbol):
         df_5m['volume'] = df_5m['volume'].astype(float)
         if len(df_5m) < 30: return None
 
-        # RSI calculation
         delta = df_5m['close'].diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
@@ -217,13 +211,11 @@ def fetch_ta_data_cached(symbol):
         rs = avg_gain / (avg_loss + 1e-10)
         df_5m['rsi'] = 100 - (100 / (1 + rs))
 
-        # MACD
         ema12 = df_5m['close'].ewm(span=12, adjust=False).mean()
         ema26 = df_5m['close'].ewm(span=26, adjust=False).mean()
         df_5m['macd'] = ema12 - ema26
         df_5m['macd_signal'] = df_5m['macd'].ewm(span=9, adjust=False).mean()
 
-        # Bollinger Bands & Moving Averages
         sma20 = df_5m['close'].rolling(window=20).mean()
         std20 = df_5m['close'].rolling(window=20).std()
         df_5m['bb_upper'] = sma20 + (2 * std20)
@@ -234,7 +226,7 @@ def fetch_ta_data_cached(symbol):
         prev_5m = df_5m.iloc[-2]
 
         url_1h = f"https://data-api.binance.vision/api/v3/klines?symbol={formatted_symbol}&interval=1h&limit=50"
-        res_1h = requests.get(url_1h, timeout=3.5).json()
+        res_1h = requests.get(url_1h, timeout=3.0).json()
         
         macro_trend = "NEUTRAL"
         macro_ema20 = 0.0
@@ -279,7 +271,6 @@ def analyze_market_signal(symbol, data):
     short_qty = st.session_state.short_holdings.get(symbol, 0.0)
     entry_price = st.session_state.entry_prices.get(symbol, 0.0)
 
-    # 1. RISK MANAGEMENT FIRST
     if long_qty > 0 and entry_price > 0:
         pnl_pct = ((price - entry_price) / entry_price) * 100.0
         if pnl_pct >= st.session_state.take_profit_pct: return price, "SELL", f"Long TP (+{pnl_pct:.2f}%)"
@@ -297,7 +288,6 @@ def analyze_market_signal(symbol, data):
     rsi_turning_down = data['prev_rsi'] > st.session_state.rsi_overbought and data['rsi'] < data['prev_rsi']
     rsi_turning_up = data['prev_rsi'] < st.session_state.rsi_oversold and data['rsi'] > data['prev_rsi']
 
-    # 2. STRICT SHORTING FILTER
     if st.session_state.allow_shorts:
         if data['macro_trend'] != "BULLISH":
             if (data['rsi'] >= st.session_state.rsi_overbought or rsi_turning_down):
@@ -306,7 +296,6 @@ def analyze_market_signal(symbol, data):
                 elif price >= data['bb_upper'] and data['volume_spike']:
                     return price, "SHORT", f"Upper BB Breakout Rejection + Vol Spike"
 
-    # 3. BUY SIGNALS
     if data['macro_trend'] == "BULLISH":
         if (data['rsi'] <= st.session_state.rsi_oversold or rsi_turning_up) and (data['macd'] > data['macd_signal'] or price <= data['bb_lower']):
             return price, "BUY", f"Trend-Aligned Buy Dip (1h Bullish | RSI: {data['rsi']:.1f})"
@@ -316,21 +305,23 @@ def analyze_market_signal(symbol, data):
 
     return price, "HOLD", f"Neutral (RSI: {data['rsi']:.1f} | 1h Trend: {data['macro_trend']})"
 
-# --- RENDER FRAGMENT ---
+# --- RENDER ENGINE ---
 @st.fragment(run_every="10s")
 def render_engine():
     if not st.session_state.selected_symbols:
         st.info("Select trading pairs in the sidebar.")
         return
 
-    # Use max 12 workers to stay under Binance public rate limits
-    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
         ta_data_list = list(executor.map(fetch_ta_data_cached, st.session_state.selected_symbols))
 
     market_summary = []
     executed_any_trade = False
 
     for symbol, ta_data in zip(st.session_state.selected_symbols, ta_data_list):
+        if ta_data is None:
+            continue
+            
         current_price, signal, reason = analyze_market_signal(symbol, ta_data)
         
         if current_price > 0:
@@ -361,7 +352,6 @@ def render_engine():
                 "Reason": reason
             })
 
-            # EXECUTION LOGIC
             trade_amt = st.session_state.trade_amount_usdt
             if st.session_state.bot_running:
                 if signal == "BUY" and st.session_state.balance >= trade_amt:
@@ -444,7 +434,7 @@ def render_engine():
         display_df = pd.DataFrame(market_summary).drop(columns=['raw_price'])
         st.dataframe(display_df, use_container_width=True)
     else:
-        st.warning("Fetching multi-timeframe candle data from Binance... (If stuck, lower Active Pairs in sidebar to 15-20 pairs)")
+        st.warning("Fetching candle data from Binance...")
 
     st.subheader("📋 Multi-Asset Trade Log")
     if len(st.session_state.trade_history) > 0:
