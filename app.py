@@ -32,10 +32,15 @@ HEADERS = {
     "Accept": "application/json"
 }
 
-# --- CURATED DIRECTORY: 100 MOST TRADED CRYPTO ASSETS HISTORICALLY ---
+# --- CURATED LIST: 100 MOST TRADED CRYPTO ASSETS HISTORICALLY ---
+# The first 10 assets represent the highest historically traded volume assets
 TOP_100_HISTORICAL_SYMBOLS = [
-    "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT",
-    "SHIBUSDT", "DOTUSDT", "LINKUSDT", "LTCUSDT", "NEARUSDT", "MATICUSDT", "UNIUSDT", "BCHUSDT",
+    # --- FIXED TOP 10 MOST TRADED ASSETS ---
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", 
+    "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "SHIBUSDT", "LINKUSDT",
+    
+    # --- REMAINING TOP 100 TRADED ASSETS ---
+    "DOTUSDT", "LTCUSDT", "NEARUSDT", "MATICUSDT", "UNIUSDT", "BCHUSDT",
     "APTUSDT", "PEPEUSDT", "ICPUSDT", "TRXUSDT", "ETCUSDT", "FILUSDT", "SUIUSDT", "XLMUSDT",
     "ATOMUSDT", "FETUSDT", "INJUSDT", "RENDERUSDT", "ARBUSDT", "OPUSDT", "TIAUSDT", "STXUSDT",
     "RUNEUSDT", "AAVEUSDT", "GRTUSDT", "FLOKIUSDT", "THETAUSDT", "FTMUSDT", "MKRUSDT", "LDOUSDT",
@@ -44,12 +49,14 @@ TOP_100_HISTORICAL_SYMBOLS = [
     "BEAMUSDT", "NEOUSDT", "JUPUSDT", "WIFUSDT", "NOTUSDT", "KSMUSDT", "CHZUSDT", "MINAUSDT",
     "ZECUSDT", "COMPUSDT", "XMRUSDT", "DASHUSDT", "IOTAUSDT", "1INCHUSDT", "GMXUSDT", "WOOUSDT",
     "ENSUSDT", "PENDLEUSDT", "BLURUSDT", "LRCUSDT", "ENJUSDT", "BATUSDT", "QTUMUSDT", "ZROUSDT",
-    "PYTHUSDT", "STRKUSDT", "IMXUSDT", "ASTRUSDT", "FLOWUSDT", "ARKMUSDT", "ALTUSDT", "PORTALUSDT",
-    "PIXELUSDT", "MANTAUSDT", "ONDOUSDT", "RONINUSDT", "MEMEUSDT", "ORCAUSDT", "RAYUSDT", "BONKUSDT",
+    "PYTHUSDT", "STRKUSDT", "IMXUSDT", "ASTRUSDT", "ARKMUSDT", "ALTUSDT", "PORTALUSDT",
+    "PIXELUSDT", "MANTAUSDT", "ONDOUSDT", "RONINUSDT", "MEMEUSDT", "ORCAUSDT", "RAYUSDT",
     "POPCATUSDT", "BRETTUSDT", "MOGUSDT", "NEIROUSDT"
 ]
 
-# --- DYNAMIC ASSET LOOKUP & REFERENCE PRICING ---
+# The top 10 most historically traded coins to show on the front page overview
+TOP_10_HISTORICAL_SYMBOLS = TOP_100_HISTORICAL_SYMBOLS[:10]
+
 @st.cache_data(ttl=3600)
 def build_coin_directory():
     """Maps top 100 symbols to exchange pair keys and gets reference prices for initial sorting."""
@@ -194,7 +201,6 @@ rsi_overbought = st.sidebar.slider("RSI Overbought (Short)", 55, 90, int(saved_d
 st.session_state.rsi_overbought = rsi_overbought
 
 st.sidebar.subheader("🔍 Coin Directory & Selection")
-# Requirement 1: Three sorting options for the coin list
 coin_sort_choice = st.sidebar.selectbox(
     "Sort Coin Selection List By",
     ["High/Low Price", "Low/High Price", "Alphabetical"],
@@ -248,7 +254,7 @@ with col_stop:
         st.toast("Bot paused.", icon="🔴")
 
 if st.session_state.bot_running:
-    st.success(f"🟢 STATUS: BOT ACTIVE (Trading Top 100 Coins Globally — Total Active: {len(st.session_state.selected_symbols)})")
+    st.success(f"🟢 STATUS: BOT ACTIVE (Trading All Selected Market Coins — Total Active: {len(st.session_state.selected_symbols)})")
 else:
     st.warning("🔴 STATUS: BOT PAUSED")
 
@@ -380,25 +386,28 @@ def analyze_market_signal(symbol, data):
 
     return price, "HOLD", f"Neutral (RSI: {data['rsi']:.1f} | 1h Trend: {data['macro_trend']})"
 
-# --- RENDER ENGINE WITH STATE PERSISTENCE ---
+# --- RENDER ENGINE ---
 @st.fragment(run_every="10s")
 def render_engine():
     # Trade history log placed above live overview table
-    st.subheader("📋 Global Multi-Asset Historical Trade Log (All Top 100 Coins)")
+    st.subheader("📋 Global Multi-Asset Historical Trade Log")
     if len(st.session_state.trade_history) > 0:
         st.table(pd.DataFrame(st.session_state.trade_history).iloc[::-1])
     else:
         st.info("No trades logged yet across your active assets.")
 
+    st.metric("Total Cash Balance", f"${st.session_state.balance:,.2f} USDT")
+    st.caption(f"🔄 Last Scan: {time.strftime('%H:%M:%S')} | Total Active Coins Evaluated: **{len(st.session_state.selected_symbols)}**")
+
     if not st.session_state.selected_symbols:
         st.info("Select active trading coins in the sidebar.")
         return
 
-    # Multithreaded execution evaluating all active coins from the 100 universe
+    # Multithreaded execution evaluating ALL active coins selected by the user (up to 100)
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         ta_data_list = list(executor.map(fetch_ta_data_cached, st.session_state.selected_symbols))
 
-    market_summary = []
+    top_10_summary = []
     executed_any_trade = False
 
     for symbol, ta_data in zip(st.session_state.selected_symbols, ta_data_list):
@@ -429,18 +438,20 @@ def render_engine():
                 pl_val = ((entry_price - current_price) / entry_price) * 100
                 pl_str = f"{pl_val:+.2f}%"
 
-            market_summary.append({
-                "raw_price": current_price,
-                "raw_volume": ta_data.get("volume_24h", 0.0),
-                "Asset": symbol,
-                "Price": f"${current_price:,.4f}" if current_price < 1 else f"${current_price:,.2f}",
-                "Position": position_type,
-                "Entry Price": f"${entry_price:,.2f}" if entry_price > 0 else "-",
-                "Current P/L": pl_str,
-                "Signal": signal,
-                "Reason": reason
-            })
+            # FILTER: ONLY ADD TOP 10 MOST TRADED COINS TO MAIN PAGE OVERVIEW
+            if symbol in TOP_10_HISTORICAL_SYMBOLS:
+                top_10_summary.append({
+                    "raw_price": current_price,
+                    "Asset": symbol,
+                    "Price": f"${current_price:,.4f}" if current_price < 1 else f"${current_price:,.2f}",
+                    "Position": position_type,
+                    "Entry Price": f"${entry_price:,.2f}" if entry_price > 0 else "-",
+                    "Current P/L": pl_str,
+                    "Signal": signal,
+                    "Reason": reason
+                })
 
+            # TRADING ENGINE: BOT EXECUTES TRADES ON ALL SELECTED COINS
             trade_amt = st.session_state.trade_amount_usdt
             if st.session_state.bot_running:
                 if signal == "BUY" and st.session_state.balance >= trade_amt:
@@ -508,24 +519,19 @@ def render_engine():
     if executed_any_trade:
         save_portfolio()
 
-    st.metric("Total Cash Balance", f"${st.session_state.balance:,.2f} USDT")
-    st.caption(f"🔄 Last Scan: {time.strftime('%H:%M:%S')} | Total Active Coins Evaluated: **{len(st.session_state.selected_symbols)}**")
-
-    # Main page UI displays only the top 10 most traded coins
+    # DISPLAY ONLY THE TOP 10 MOST TRADED COINS IN THE LIVE OVERVIEW TABLE
     st.subheader("📊 Top 10 Most Traded Coins (Live Overview)")
-    if market_summary:
-        top_10_traded = sorted(market_summary, key=lambda x: x['raw_volume'], reverse=True)[:10]
-
+    if top_10_summary:
         if sort_order == "Price (High to Low)":
-            top_10_traded.sort(key=lambda x: x['raw_price'], reverse=True)
+            top_10_summary.sort(key=lambda x: x['raw_price'], reverse=True)
         elif sort_order == "Price (Low to High)":
-            top_10_traded.sort(key=lambda x: x['raw_price'], reverse=False)
+            top_10_summary.sort(key=lambda x: x['raw_price'], reverse=False)
         elif sort_order == "Alphabetical":
-            top_10_traded.sort(key=lambda x: x['Asset'])
+            top_10_summary.sort(key=lambda x: x['Asset'])
 
-        display_df = pd.DataFrame(top_10_traded).drop(columns=['raw_price', 'raw_volume'])
+        display_df = pd.DataFrame(top_10_summary).drop(columns=['raw_price'])
         st.dataframe(display_df, use_container_width=True)
     else:
-        st.warning("Fetching candle data from public market APIs...")
+        st.warning("Fetching candle data for Top 10 coins...")
 
 render_engine()
