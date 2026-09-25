@@ -5,6 +5,7 @@ import requests
 import time
 import json
 import os
+import concurrent.futures
 
 st.set_page_config(page_title="24/7 Universal Crypto AI Bot", layout="wide")
 
@@ -284,8 +285,17 @@ def automated_trading_engine():
     market_summary = []
     executed_any_trade = False
     
-    for symbol in selected_symbols:
-        current_price, signal, reason = analyze_market_signal(symbol)
+    # --- NEW FAST PARALLEL PROCESSING ---
+    def fetch_and_analyze(sym):
+        price, sig, rsn = analyze_market_signal(sym)
+        return sym, price, sig, rsn
+
+    # Fetch all coins simultaneously 
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        results = list(executor.map(fetch_and_analyze, selected_symbols))
+    
+    # Process the fetched data
+    for symbol, current_price, signal, reason in results:
         
         if current_price > 0:
             long_qty = st.session_state.holdings.get(symbol, 0.0)
