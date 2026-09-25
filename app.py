@@ -137,7 +137,7 @@ def fetch_ta_data(symbol, interval="5m"):
         formatted_symbol = symbol.replace("/", "").replace("-", "").upper()
 
         url = f"https://api.binance.com/api/v3/klines?symbol={formatted_symbol}&interval={interval}&limit=100"
-        res = requests.get(url, timeout=3).json()
+        res = requests.get(url, timeout=10).json()
         
         if isinstance(res, dict) and "code" in res:
             return None
@@ -191,7 +191,8 @@ def fetch_ta_data(symbol, interval="5m"):
             "bb_upper": float(latest['bb_upper'])
         }
 
-    except Exception:
+        except Exception as e:
+        st.error(f"API Error on {symbol}: {e}")
         return None
 
 # --- MULTI-INDICATOR SIGNAL ENGINE ---
