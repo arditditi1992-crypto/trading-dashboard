@@ -23,7 +23,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🤖 24/7 Crypto AI Bot (Top 100 Volume Directory)")
+st.title("🤖 24/7 Crypto AI Bot (Top 100 Traded Coins)")
 
 PORTFOLIO_FILE = "portfolio.json"
 
@@ -32,65 +32,74 @@ HEADERS = {
     "Accept": "application/json"
 }
 
-# --- DYNAMIC ASSET DISCOVERY & INITIAL PRICING ---
+# --- CURATED DIRECTORY: 100 MOST TRADED CRYPTO ASSETS HISTORICALLY ---
+TOP_100_HISTORICAL_SYMBOLS = [
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT",
+    "SHIBUSDT", "DOTUSDT", "LINKUSDT", "LTCUSDT", "NEARUSDT", "MATICUSDT", "UNIUSDT", "BCHUSDT",
+    "APTUSDT", "PEPEUSDT", "ICPUSDT", "TRXUSDT", "ETCUSDT", "FILUSDT", "SUIUSDT", "XLMUSDT",
+    "ATOMUSDT", "FETUSDT", "INJUSDT", "RENDERUSDT", "ARBUSDT", "OPUSDT", "TIAUSDT", "STXUSDT",
+    "RUNEUSDT", "AAVEUSDT", "GRTUSDT", "FLOKIUSDT", "THETAUSDT", "FTMUSDT", "MKRUSDT", "LDOUSDT",
+    "SEIUSDT", "BONKUSDT", "ORDIUSDT", "ALGOUSDT", "EGLDUSDT", "GALAUSDT", "FLOWUSDT", "SANDUSDT",
+    "AXSUSDT", "MANAUSDT", "SNXUSDT", "KASUSDT", "CRVUSDT", "DYDXUSDT", "EOSUSDT", "XTZUSDT",
+    "BEAMUSDT", "NEOUSDT", "JUPUSDT", "WIFUSDT", "NOTUSDT", "KSMUSDT", "CHZUSDT", "MINAUSDT",
+    "ZECUSDT", "COMPUSDT", "XMRUSDT", "DASHUSDT", "IOTAUSDT", "1INCHUSDT", "GMXUSDT", "WOOUSDT",
+    "ENSUSDT", "PENDLEUSDT", "BLURUSDT", "LRCUSDT", "ENJUSDT", "BATUSDT", "QTUMUSDT", "ZROUSDT",
+    "PYTHUSDT", "STRKUSDT", "IMXUSDT", "ASTRUSDT", "FLOWUSDT", "ARKMUSDT", "ALTUSDT", "PORTALUSDT",
+    "PIXELUSDT", "MANTAUSDT", "ONDOUSDT", "RONINUSDT", "MEMEUSDT", "ORCAUSDT", "RAYUSDT", "BONKUSDT",
+    "POPCATUSDT", "BRETTUSDT", "MOGUSDT", "NEIROUSDT"
+]
+
+# --- DYNAMIC ASSET LOOKUP & REFERENCE PRICING ---
 @st.cache_data(ttl=3600)
-def fetch_all_exchange_pairs():
-    """Fetches tradable USD/USDT crypto pairs dynamically from public exchange directories."""
+def build_coin_directory():
+    """Maps top 100 symbols to exchange pair keys and gets reference prices for initial sorting."""
     pairs_map = {}
     price_map = {}
-    
+
     try:
         url = "https://api.kraken.com/0/public/AssetPairs"
         r = requests.get(url, headers=HEADERS, timeout=5.0)
         if r.status_code == 200:
             res = r.json()
             if not res.get("error") and "result" in res:
-                for pair_key, pair_info in res["result"].items():
-                    altname = pair_info.get("altname", "")
-                    wsname = pair_info.get("wsname", "")
-                    
-                    if "USD" in altname or "/USD" in wsname:
-                        clean_symbol = altname.replace("XBT", "BTC").replace("XDG", "DOGE")
-                        if not clean_symbol.endswith("USD") and not clean_symbol.endswith("USDT"):
-                            clean_symbol += "USDT"
-                        elif clean_symbol.endswith("USD") and not clean_symbol.endswith("USDT"):
-                            clean_symbol = clean_symbol[:-3] + "USDT"
-                            
-                        pairs_map[clean_symbol] = pair_key
+                kraken_pairs = res["result"]
+                for sym in TOP_100_HISTORICAL_SYMBOLS:
+                    base = sym.replace("USDT", "").replace("USD", "")
+                    found = False
+                    for p_key, p_info in kraken_pairs.items():
+                        altname = p_info.get("altname", "")
+                        wsname = p_info.get("wsname", "")
+                        if base in altname or f"{base}/" in wsname:
+                            pairs_map[sym] = p_key
+                            found = True
+                            break
+                    if not found:
+                        pairs_map[sym] = sym
     except Exception:
-        pass
-
-    fallback_pairs = [
-        "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "BNBUSDT", 
-        "AVAXUSDT", "DOTUSDT", "LINKUSDT", "MATICUSDT", "SHIBUSDT", "LTCUSDT", "NEARUSDT",
-        "UNIUSDT", "ATOMUSDT", "ETCUSDT", "XLMUSDT", "BCHUSDT", "FILUSDT", "APTUSDT",
-        "TRXUSDT", "SUIUSDT", "ICPUSDT", "PEPEUSDT", "FETUSDT", "INJUSDT", "RENDERUSDT"
-    ]
-    
-    for fb in fallback_pairs:
-        if fb not in pairs_map:
-            pairs_map[fb] = fb
+        for sym in TOP_100_HISTORICAL_SYMBOLS:
+            pairs_map[sym] = sym
 
     try:
         ticker_url = "https://api.kraken.com/0/public/Ticker"
         tr = requests.get(ticker_url, headers=HEADERS, timeout=4.0)
         if tr.status_code == 200 and "result" in tr.json():
             tdata = tr.json()["result"]
-            for sym, pair_id in pairs_map.items():
-                if pair_id in tdata:
-                    price_map[sym] = float(tdata[pair_id]["c"][0])
+            for sym in TOP_100_HISTORICAL_SYMBOLS:
+                p_id = pairs_map.get(sym, sym)
+                if p_id in tdata:
+                    price_map[sym] = float(tdata[p_id]["c"][0])
                 elif sym in tdata:
                     price_map[sym] = float(tdata[sym]["c"][0])
                 else:
                     price_map[sym] = 0.0
     except Exception:
-        for sym in pairs_map:
+        for sym in TOP_100_HISTORICAL_SYMBOLS:
             price_map[sym] = 0.0
 
     return pairs_map, price_map
 
-PAIR_LOOKUP_MAP, REFERENCE_PRICE_MAP = fetch_all_exchange_pairs()
-ALL_TRADING_SYMBOLS = list(PAIR_LOOKUP_MAP.keys())
+PAIR_LOOKUP_MAP, REFERENCE_PRICE_MAP = build_coin_directory()
+ALL_TRADING_SYMBOLS = TOP_100_HISTORICAL_SYMBOLS
 
 def load_portfolio():
     if os.path.exists(PORTFOLIO_FILE):
@@ -157,7 +166,7 @@ with sb_col1:
     st.session_state.trade_amount_usdt = trade_amount_usdt
 
 with sb_col2:
-    sort_order = st.sidebar.selectbox("Sort Table By", ["Price (High to Low)", "Price (Low to High)", "Alphabetical"], key="sort_order_select")
+    sort_order = st.sidebar.selectbox("Sort Overview By", ["Price (High to Low)", "Price (Low to High)", "Alphabetical"], key="sort_order_select")
 
 st.sidebar.subheader("🛡️ Short Protection Controls")
 allow_shorts = st.sidebar.checkbox("Enable Short Positions", value=saved_data.get("allow_shorts", True), key="allow_shorts_check")
@@ -185,9 +194,9 @@ rsi_overbought = st.sidebar.slider("RSI Overbought (Short)", 55, 90, int(saved_d
 st.session_state.rsi_overbought = rsi_overbought
 
 st.sidebar.subheader("🔍 Coin Directory & Selection")
-# Requirement: Three sorting methods for coin multiselect drop-down
+# Requirement 1: Three sorting options for the coin list
 coin_sort_choice = st.sidebar.selectbox(
-    "Sort Selection Directory By",
+    "Sort Coin Selection List By",
     ["High/Low Price", "Low/High Price", "Alphabetical"],
     key="coin_sort_choice_select"
 )
@@ -201,7 +210,7 @@ else:
 
 valid_defaults = [s for s in saved_data.get("selected_symbols", ALL_TRADING_SYMBOLS) if s in ALL_TRADING_SYMBOLS]
 selected_symbols = st.sidebar.multiselect(
-    f"Active Trading Coins ({len(ALL_TRADING_SYMBOLS)} Available)",
+    f"Active Trading Coins ({len(ALL_TRADING_SYMBOLS)} Top Volume Coins)",
     options=sorted_coins,
     default=valid_defaults if valid_defaults else ALL_TRADING_SYMBOLS,
     key="selected_symbols_multi"
@@ -239,7 +248,7 @@ with col_stop:
         st.toast("Bot paused.", icon="🔴")
 
 if st.session_state.bot_running:
-    st.success("🟢 STATUS: BOT ACTIVE (Trading All Selected Market Coins)")
+    st.success(f"🟢 STATUS: BOT ACTIVE (Trading Top 100 Coins Globally — Total Active: {len(st.session_state.selected_symbols)})")
 else:
     st.warning("🔴 STATUS: BOT PAUSED")
 
@@ -374,8 +383,8 @@ def analyze_market_signal(symbol, data):
 # --- RENDER ENGINE WITH STATE PERSISTENCE ---
 @st.fragment(run_every="10s")
 def render_engine():
-    # Top of Page: Global Historical Trade Log
-    st.subheader("📋 Global Multi-Asset Historical Trade Log")
+    # Trade history log placed above live overview table
+    st.subheader("📋 Global Multi-Asset Historical Trade Log (All Top 100 Coins)")
     if len(st.session_state.trade_history) > 0:
         st.table(pd.DataFrame(st.session_state.trade_history).iloc[::-1])
     else:
@@ -385,7 +394,7 @@ def render_engine():
         st.info("Select active trading coins in the sidebar.")
         return
 
-    # Multithreaded live market fetching for high speed across 100+ assets
+    # Multithreaded execution evaluating all active coins from the 100 universe
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         ta_data_list = list(executor.map(fetch_ta_data_cached, st.session_state.selected_symbols))
 
@@ -502,21 +511,19 @@ def render_engine():
     st.metric("Total Cash Balance", f"${st.session_state.balance:,.2f} USDT")
     st.caption(f"🔄 Last Scan: {time.strftime('%H:%M:%S')} | Total Active Coins Evaluated: **{len(st.session_state.selected_symbols)}**")
 
-    # Requirement: Show top 100 most traded coins in the main UI table
-    st.subheader("📊 Top 100 Most Traded Coins (Live Overview)")
+    # Main page UI displays only the top 10 most traded coins
+    st.subheader("📊 Top 10 Most Traded Coins (Live Overview)")
     if market_summary:
-        # Filter and rank top 100 by 24h market trading volume
-        top_100_traded = sorted(market_summary, key=lambda x: x['raw_volume'], reverse=True)[:100]
+        top_10_traded = sorted(market_summary, key=lambda x: x['raw_volume'], reverse=True)[:10]
 
-        # Apply secondary UI sorting choice
         if sort_order == "Price (High to Low)":
-            top_100_traded.sort(key=lambda x: x['raw_price'], reverse=True)
+            top_10_traded.sort(key=lambda x: x['raw_price'], reverse=True)
         elif sort_order == "Price (Low to High)":
-            top_100_traded.sort(key=lambda x: x['raw_price'], reverse=False)
+            top_10_traded.sort(key=lambda x: x['raw_price'], reverse=False)
         elif sort_order == "Alphabetical":
-            top_100_traded.sort(key=lambda x: x['Asset'])
+            top_10_traded.sort(key=lambda x: x['Asset'])
 
-        display_df = pd.DataFrame(top_100_traded).drop(columns=['raw_price', 'raw_volume'])
+        display_df = pd.DataFrame(top_10_traded).drop(columns=['raw_price', 'raw_volume'])
         st.dataframe(display_df, use_container_width=True)
     else:
         st.warning("Fetching candle data from public market APIs...")
