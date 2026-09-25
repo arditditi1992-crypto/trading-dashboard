@@ -23,7 +23,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🤖 24/7 Crypto AI Bot (Global Market & Top 10 View)")
+st.title("🤖 24/7 Crypto AI Bot (Top 100 Volume Directory)")
 
 PORTFOLIO_FILE = "portfolio.json"
 
@@ -35,7 +35,7 @@ HEADERS = {
 # --- DYNAMIC ASSET DISCOVERY & INITIAL PRICING ---
 @st.cache_data(ttl=3600)
 def fetch_all_exchange_pairs():
-    """Fetches all tradable USD/USDT crypto pairs dynamically from public exchange directories."""
+    """Fetches tradable USD/USDT crypto pairs dynamically from public exchange directories."""
     pairs_map = {}
     price_map = {}
     
@@ -63,14 +63,14 @@ def fetch_all_exchange_pairs():
     fallback_pairs = [
         "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "BNBUSDT", 
         "AVAXUSDT", "DOTUSDT", "LINKUSDT", "MATICUSDT", "SHIBUSDT", "LTCUSDT", "NEARUSDT",
-        "UNIUSDT", "ATOMUSDT", "ETCUSDT", "XLMUSDT", "BCHUSDT", "FILUSDT", "APTUSDT"
+        "UNIUSDT", "ATOMUSDT", "ETCUSDT", "XLMUSDT", "BCHUSDT", "FILUSDT", "APTUSDT",
+        "TRXUSDT", "SUIUSDT", "ICPUSDT", "PEPEUSDT", "FETUSDT", "INJUSDT", "RENDERUSDT"
     ]
     
     for fb in fallback_pairs:
         if fb not in pairs_map:
             pairs_map[fb] = fb
 
-    # Fetch reference prices for initial sorting
     try:
         ticker_url = "https://api.kraken.com/0/public/Ticker"
         tr = requests.get(ticker_url, headers=HEADERS, timeout=4.0)
@@ -185,9 +185,9 @@ rsi_overbought = st.sidebar.slider("RSI Overbought (Short)", 55, 90, int(saved_d
 st.session_state.rsi_overbought = rsi_overbought
 
 st.sidebar.subheader("🔍 Coin Directory & Selection")
-# Requirement 1: Three sorting options for the coin list
+# Requirement: Three sorting methods for coin multiselect drop-down
 coin_sort_choice = st.sidebar.selectbox(
-    "Sort Coin Selection List By",
+    "Sort Selection Directory By",
     ["High/Low Price", "Low/High Price", "Alphabetical"],
     key="coin_sort_choice_select"
 )
@@ -239,7 +239,7 @@ with col_stop:
         st.toast("Bot paused.", icon="🔴")
 
 if st.session_state.bot_running:
-    st.success("🟢 STATUS: BOT ACTIVE (Trading All Active Coins globally)")
+    st.success("🟢 STATUS: BOT ACTIVE (Trading All Selected Market Coins)")
 else:
     st.warning("🔴 STATUS: BOT PAUSED")
 
@@ -374,8 +374,8 @@ def analyze_market_signal(symbol, data):
 # --- RENDER ENGINE WITH STATE PERSISTENCE ---
 @st.fragment(run_every="10s")
 def render_engine():
-    # Requirement 2: Displays global trade log at top of the page across all coins
-    st.subheader("📋 Global Multi-Asset Trade Log (All Market Coins)")
+    # Top of Page: Global Historical Trade Log
+    st.subheader("📋 Global Multi-Asset Historical Trade Log")
     if len(st.session_state.trade_history) > 0:
         st.table(pd.DataFrame(st.session_state.trade_history).iloc[::-1])
     else:
@@ -385,7 +385,8 @@ def render_engine():
         st.info("Select active trading coins in the sidebar.")
         return
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+    # Multithreaded live market fetching for high speed across 100+ assets
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         ta_data_list = list(executor.map(fetch_ta_data_cached, st.session_state.selected_symbols))
 
     market_summary = []
@@ -501,21 +502,21 @@ def render_engine():
     st.metric("Total Cash Balance", f"${st.session_state.balance:,.2f} USDT")
     st.caption(f"🔄 Last Scan: {time.strftime('%H:%M:%S')} | Total Active Coins Evaluated: **{len(st.session_state.selected_symbols)}**")
 
-    # Requirement 2: Filter main UI view to show top 10 most traded coins
-    st.subheader("📊 Top 10 Most Traded Coins (Live Overview)")
+    # Requirement: Show top 100 most traded coins in the main UI table
+    st.subheader("📊 Top 100 Most Traded Coins (Live Overview)")
     if market_summary:
-        # Sort all evaluated coins by trading volume
-        top_10_traded = sorted(market_summary, key=lambda x: x['raw_volume'], reverse=True)[:10]
+        # Filter and rank top 100 by 24h market trading volume
+        top_100_traded = sorted(market_summary, key=lambda x: x['raw_volume'], reverse=True)[:100]
 
-        # Apply user's custom sort preference to the top 10 display
+        # Apply secondary UI sorting choice
         if sort_order == "Price (High to Low)":
-            top_10_traded.sort(key=lambda x: x['raw_price'], reverse=True)
+            top_100_traded.sort(key=lambda x: x['raw_price'], reverse=True)
         elif sort_order == "Price (Low to High)":
-            top_10_traded.sort(key=lambda x: x['raw_price'], reverse=False)
+            top_100_traded.sort(key=lambda x: x['raw_price'], reverse=False)
         elif sort_order == "Alphabetical":
-            top_10_traded.sort(key=lambda x: x['Asset'])
+            top_100_traded.sort(key=lambda x: x['Asset'])
 
-        display_df = pd.DataFrame(top_10_traded).drop(columns=['raw_price', 'raw_volume'])
+        display_df = pd.DataFrame(top_100_traded).drop(columns=['raw_price', 'raw_volume'])
         st.dataframe(display_df, use_container_width=True)
     else:
         st.warning("Fetching candle data from public market APIs...")
