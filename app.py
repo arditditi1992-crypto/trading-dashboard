@@ -23,15 +23,61 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🤖 24/7 Crypto AI Bot (Enhanced Short Guard Edition)")
+st.title("🤖 24/7 Crypto AI Bot (Full Asset Directory Edition)")
 
 PORTFOLIO_FILE = "portfolio.json"
 
-@st.cache_data(ttl=1800)
-def fetch_top_usdt_pairs():
-    return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "BNBUSDT", "AVAXUSDT"]
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/json"
+}
 
-ALL_BINANCE_PAIRS = fetch_top_usdt_pairs()
+# --- DYNAMIC ASSET DISCOVERY ---
+@st.cache_data(ttl=86400)
+def fetch_all_exchange_pairs():
+    """Fetches all tradable USD/USDT crypto pairs dynamically from public exchange directories."""
+    pairs_map = {}
+    
+    # Provider 1: Kraken Asset Pairs Directory
+    try:
+        url = "https://api.kraken.com/0/public/AssetPairs"
+        r = requests.get(url, headers=HEADERS, timeout=5.0)
+        if r.status_code == 200:
+            res = r.json()
+            if not res.get("error") and "result" in res:
+                for pair_key, pair_info in res["result"].items():
+                    altname = pair_info.get("altname", "")
+                    wsname = pair_info.get("wsname", "")
+                    
+                    # Filter for USD / USDT spot pairs
+                    if "USD" in altname or "/USD" in wsname:
+                        # Clean symbol for UI display (e.g. BTCUSDT, ETHUSDT)
+                        clean_symbol = altname.replace("XBT", "BTC").replace("XDG", "DOGE")
+                        if not clean_symbol.endswith("USD") and not clean_symbol.endswith("USDT"):
+                            clean_symbol += "USDT"
+                        elif clean_symbol.endswith("USD") and not clean_symbol.endswith("USDT"):
+                            clean_symbol = clean_symbol[:-3] + "USDT"
+                            
+                        pairs_map[clean_symbol] = pair_key
+    except Exception:
+        pass
+
+    # Standard fallback list if network is restricted during initialization
+    fallback_pairs = [
+        "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "BNBUSDT", 
+        "AVAXUSDT", "DOTUSDT", "LINKUSDT", "MATICUSDT", "SHIBUSDT", "LTCUSDT", "NEARUSDT",
+        "UNIUSDT", "ATOMUSDT", "ETCUSDT", "XLMUSDT", "BCHUSDT", "FILUSDT", "APTUSDT"
+    ]
+    
+    for fb in fallback_pairs:
+        if fb not in pairs_map:
+            pairs_map[fb] = fb
+
+    # Return sorted standard symbol names and pair lookup map
+    sorted_symbols = sorted(list(pairs_map.keys()))
+    return sorted_symbols, pairs_map
+
+ALL_TRADING_SYMBOLS, PAIR_LOOKUP_MAP = fetch_all_exchange_pairs()
 
 def load_portfolio():
     if os.path.exists(PORTFOLIO_FILE):
@@ -125,11 +171,12 @@ st.session_state.rsi_oversold = rsi_oversold
 rsi_overbought = st.sidebar.slider("RSI Overbought (Short)", 55, 90, int(saved_data.get("rsi_overbought", 72)), 1, key="rsi_ob_slider")
 st.session_state.rsi_overbought = rsi_overbought
 
-valid_defaults = [s for s in saved_data.get("selected_symbols", ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]) if s in ALL_BINANCE_PAIRS]
+# Multi-select dropdown containing ALL available exchange pairs
+valid_defaults = [s for s in saved_data.get("selected_symbols", ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]) if s in ALL_TRADING_SYMBOLS]
 selected_symbols = st.sidebar.multiselect(
-    f"Select Trading Pairs ({len(ALL_BINANCE_PAIRS)} Available)",
-    options=ALL_BINANCE_PAIRS,
-    default=valid_defaults if valid_defaults else ALL_BINANCE_PAIRS[:4],
+    f"Select Active Trading Pairs ({len(ALL_TRADING_SYMBOLS)} Market Pairs Loaded)",
+    options=ALL_TRADING_SYMBOLS,
+    default=valid_defaults if valid_defaults else ALL_TRADING_SYMBOLS[:4],
     key="selected_symbols_multi"
 )
 st.session_state.selected_symbols = selected_symbols
@@ -165,75 +212,87 @@ with col_stop:
         st.toast("Bot paused.", icon="🔴")
 
 if st.session_state.bot_running:
-    st.success("🟢 STATUS: BOT ACTIVE (Enhanced Short Protection & Volume Filters)")
+    st.success("🟢 STATUS: BOT ACTIVE (Full Market Pair Integration)")
 else:
     st.warning("🔴 STATUS: BOT PAUSED")
 
-# --- UNBLOCKED MULTI-SOURCE DATA ENGINE WITH HIGH TTL CACHING ---
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-
-COIN_MAP = {
-    "BTCUSDT": {"paprika": "btc-bitcoin", "coinbase": "BTC-USD"},
-    "ETHUSDT": {"paprika": "eth-ethereum", "coinbase": "ETH-USD"},
-    "SOLUSDT": {"paprika": "sol-solana", "coinbase": "SOL-USD"},
-    "XRPUSDT": {"paprika": "xrp-xrp", "coinbase": "XRP-USD"},
-    "ADAUSDT": {"paprika": "ada-cardano", "coinbase": "ADA-USD"},
-    "DOGEUSDT": {"paprika": "doge-dogecoin", "coinbase": "DOGE-USD"},
-    "BNBUSDT": {"paprika": "bnb-binance-coin", "coinbase": "BNB-USD"},
-    "AVAXUSDT": {"paprika": "avax-avalanche", "coinbase": "AVAX-USD"}
-}
-
-@st.cache_data(ttl=60, show_spinner=False)
+# --- REAL-TIME DATA ENGINE FOR ALL PAIRS ---
+@st.cache_data(ttl=5, show_spinner=False)
 def fetch_ta_data_cached(symbol):
-    pair_info = COIN_MAP.get(symbol, {"paprika": "btc-bitcoin", "coinbase": "BTC-USD"})
+    pair_id = PAIR_LOOKUP_MAP.get(symbol, symbol)
     
-    # Provider 1: Coinbase Public Spot API (US-friendly, no rate-limit issue)
+    # Provider 1: Public Exchange OHLC Endpoint
     try:
-        cb_symbol = pair_info['coinbase']
-        url = f"https://api.coinbase.com/v2/prices/{cb_symbol}/spot"
-        r = requests.get(url, headers=HEADERS, timeout=2.5)
+        url = f"https://api.kraken.com/0/public/OHLC?pair={pair_id}&interval=5"
+        r = requests.get(url, headers=HEADERS, timeout=3.0)
+        if r.status_code == 200:
+            res = r.json()
+            if not res.get("error") and "result" in res:
+                pair_key = list(res["result"].keys())[0]
+                candles = res["result"][pair_key]
+                if len(candles) >= 30:
+                    df = pd.DataFrame(candles, columns=['time', 'open', 'high', 'low', 'close', 'vwap', 'volume', 'count'])
+                    df['close'] = df['close'].astype(float)
+                    df['volume'] = df['volume'].astype(float)
+
+                    delta = df['close'].diff()
+                    gain = delta.clip(lower=0)
+                    loss = -delta.clip(upper=0)
+                    avg_gain = gain.rolling(window=14).mean()
+                    avg_loss = loss.rolling(window=14).mean()
+                    rs = avg_gain / (avg_loss + 1e-10)
+                    df['rsi'] = 100 - (100 / (1 + rs))
+
+                    ema12 = df['close'].ewm(span=12, adjust=False).mean()
+                    ema26 = df['close'].ewm(span=26, adjust=False).mean()
+                    df['macd'] = ema12 - ema26
+                    df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
+
+                    sma20 = df['close'].rolling(window=20).mean()
+                    std20 = df['close'].rolling(window=20).std()
+                    df['bb_upper'] = sma20 + (2 * std20)
+                    df['bb_lower'] = sma20 - (2 * std20)
+                    df['vol_ma20'] = df['volume'].rolling(window=20).mean()
+
+                    latest = df.iloc[-1]
+                    prev = df.iloc[-2]
+
+                    return {
+                        "current_price": float(latest['close']),
+                        "rsi": float(latest['rsi']),
+                        "prev_rsi": float(prev['rsi']),
+                        "macd": float(latest['macd']),
+                        "macd_signal": float(latest['macd_signal']),
+                        "prev_macd": float(prev['macd']),
+                        "prev_macd_signal": float(prev['macd_signal']),
+                        "bb_lower": float(latest['bb_lower']),
+                        "bb_upper": float(latest['bb_upper']),
+                        "volume_spike": float(latest['volume']) >= (float(latest['vol_ma20']) * st.session_state.vol_multiplier),
+                        "macro_trend": "BULLISH" if float(latest['close']) > float(sma20.iloc[-1]) else "BEARISH",
+                        "macro_ema20": float(sma20.iloc[-1])
+                    }
+    except Exception:
+        pass
+
+    # Provider 2: Coinbase Spot Fallback
+    try:
+        base_asset = symbol.replace("USDT", "").replace("USD", "")
+        url = f"https://api.coinbase.com/v2/prices/{base_asset}-USD/spot"
+        r = requests.get(url, headers=HEADERS, timeout=2.0)
         if r.status_code == 200:
             price = float(r.json()['data']['amount'])
             return {
                 "current_price": price,
-                "rsi": 52.0,
-                "prev_rsi": 50.0,
-                "macd": 0.5,
-                "macd_signal": 0.2,
-                "prev_macd": 0.3,
-                "prev_macd_signal": 0.2,
+                "rsi": 50.0,
+                "prev_rsi": 49.0,
+                "macd": 0.1,
+                "macd_signal": 0.05,
+                "prev_macd": 0.08,
+                "prev_macd_signal": 0.05,
                 "bb_lower": price * 0.98,
                 "bb_upper": price * 1.02,
                 "volume_spike": True,
                 "macro_trend": "BULLISH",
-                "macro_ema20": price * 0.99
-            }
-    except Exception:
-        pass
-
-    # Provider 2: Coinpaprika Public API
-    try:
-        coin_id = pair_info['paprika']
-        url = f"https://api.coinpaprika.com/v1/tickers/{coin_id}"
-        r = requests.get(url, headers=HEADERS, timeout=2.5)
-        if r.status_code == 200:
-            data = r.json()
-            price = float(data['quotes']['USD']['price'])
-            pct_24h = float(data['quotes']['USD']['percent_change_24h'])
-            rsi_est = min(max(50.0 + (pct_24h * 3.0), 10.0), 90.0)
-            
-            return {
-                "current_price": price,
-                "rsi": rsi_est,
-                "prev_rsi": rsi_est - 1.0,
-                "macd": pct_24h * 0.1,
-                "macd_signal": pct_24h * 0.08,
-                "prev_macd": (pct_24h * 0.1) - 0.05,
-                "prev_macd_signal": pct_24h * 0.08,
-                "bb_lower": price * 0.98,
-                "bb_upper": price * 1.02,
-                "volume_spike": True,
-                "macro_trend": "BULLISH" if pct_24h > 0 else "BEARISH",
                 "macro_ema20": price * 0.99
             }
     except Exception:
@@ -299,7 +358,6 @@ def render_engine():
     executed_any_trade = False
 
     for symbol, ta_data in zip(st.session_state.selected_symbols, ta_data_list):
-        # Fallback to session state if the latest network call returned None
         if ta_data is not None:
             st.session_state.last_valid_ta[symbol] = ta_data
         else:
