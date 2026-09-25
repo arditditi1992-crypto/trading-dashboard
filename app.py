@@ -140,6 +140,7 @@ def fetch_ta_data(symbol, interval="5m"):
         res = requests.get(url, timeout=10).json()
         
         if isinstance(res, dict) and "code" in res:
+            st.error(f"Binance rejected {symbol}: {res.get('msg', res)}")
             return None
 
         df = pd.DataFrame(res, columns=[
