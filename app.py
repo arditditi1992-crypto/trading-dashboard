@@ -191,7 +191,7 @@ def fetch_ta_data(symbol, interval="5m"):
             "bb_upper": float(latest['bb_upper'])
         }
 
-        except Exception as e:
+    except Exception as e:
         st.error(f"API Error on {symbol}: {e}")
         return None
 
