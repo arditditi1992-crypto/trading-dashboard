@@ -23,7 +23,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🤖 24/7 Crypto AI Bot (Top 100 Traded Coins)")
+st.title("🤖 24/7 Crypto AI Bot (1H Multi-Timeframe Strategy)")
 
 PORTFOLIO_FILE = "portfolio.json"
 
@@ -32,14 +32,9 @@ HEADERS = {
     "Accept": "application/json"
 }
 
-# --- CURATED LIST: 100 MOST TRADED CRYPTO ASSETS HISTORICALLY ---
-# The first 10 assets represent the highest historically traded volume assets
 TOP_100_HISTORICAL_SYMBOLS = [
-    # --- FIXED TOP 10 MOST TRADED ASSETS ---
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", 
     "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "SHIBUSDT", "LINKUSDT",
-    
-    # --- REMAINING TOP 100 TRADED ASSETS ---
     "DOTUSDT", "LTCUSDT", "NEARUSDT", "MATICUSDT", "UNIUSDT", "BCHUSDT",
     "APTUSDT", "PEPEUSDT", "ICPUSDT", "TRXUSDT", "ETCUSDT", "FILUSDT", "SUIUSDT", "XLMUSDT",
     "ATOMUSDT", "FETUSDT", "INJUSDT", "RENDERUSDT", "ARBUSDT", "OPUSDT", "TIAUSDT", "STXUSDT",
@@ -58,7 +53,6 @@ TOP_10_HISTORICAL_SYMBOLS = TOP_100_HISTORICAL_SYMBOLS[:10]
 
 @st.cache_data(ttl=3600)
 def build_coin_directory():
-    """Maps top 100 symbols to exchange pair keys and gets reference prices for initial sorting."""
     pairs_map = {}
     price_map = {}
 
@@ -257,49 +251,71 @@ if st.session_state.bot_running:
 else:
     st.warning("🔴 STATUS: BOT PAUSED")
 
-# --- REAL-TIME DATA ENGINE ---
+# --- REAL-TIME MULTI-TIMEFRAME DATA ENGINE ---
 @st.cache_data(ttl=5, show_spinner=False)
 def fetch_ta_data_cached(symbol):
     pair_id = PAIR_LOOKUP_MAP.get(symbol, symbol)
     
     try:
-        url = f"https://api.kraken.com/0/public/OHLC?pair={pair_id}&interval=5"
-        r = requests.get(url, headers=HEADERS, timeout=3.0)
-        if r.status_code == 200:
-            res = r.json()
-            if not res.get("error") and "result" in res:
-                pair_key = list(res["result"].keys())[0]
-                candles = res["result"][pair_key]
-                if len(candles) >= 30:
-                    df = pd.DataFrame(candles, columns=['time', 'open', 'high', 'low', 'close', 'vwap', 'volume', 'count'])
-                    df['close'] = df['close'].astype(float)
-                    df['volume'] = df['volume'].astype(float)
+        # 1. Fetch 5-Minute Execution Candles
+        url_5m = f"https://api.kraken.com/0/public/OHLC?pair={pair_id}&interval=5"
+        r_5m = requests.get(url_5m, headers=HEADERS, timeout=3.0)
 
-                    delta = df['close'].diff()
+        # 2. Fetch 1-Hour Trend Filter Candles (Multi-Timeframe Check)
+        url_1h = f"https://api.kraken.com/0/public/OHLC?pair={pair_id}&interval=60"
+        r_1h = requests.get(url_1h, headers=HEADERS, timeout=3.0)
+
+        if r_5m.status_code == 200 and r_1h.status_code == 200:
+            res_5m = r_5m.json()
+            res_1h = r_1h.json()
+
+            if not res_5m.get("error") and not res_1h.get("error"):
+                p_key_5m = list(res_5m["result"].keys())[0]
+                p_key_1h = list(res_1h["result"].keys())[0]
+
+                candles_5m = res_5m["result"][p_key_5m]
+                candles_1h = res_1h["result"][p_key_1h]
+
+                if len(candles_5m) >= 30 and len(candles_1h) >= 50:
+                    # Parse 5m dataframe
+                    df5 = pd.DataFrame(candles_5m, columns=['time', 'open', 'high', 'low', 'close', 'vwap', 'volume', 'count'])
+                    df5['close'] = df5['close'].astype(float)
+                    df5['volume'] = df5['volume'].astype(float)
+
+                    # Parse 1h dataframe for Macro 50 EMA
+                    df1h = pd.DataFrame(candles_1h, columns=['time', 'open', 'high', 'low', 'close', 'vwap', 'volume', 'count'])
+                    df1h['close'] = df1h['close'].astype(float)
+                    ema50_1h = df1h['close'].ewm(span=50, adjust=False).mean().iloc[-1]
+
+                    # Indicators on 5m
+                    delta = df5['close'].diff()
                     gain = delta.clip(lower=0)
                     loss = -delta.clip(upper=0)
                     avg_gain = gain.rolling(window=14).mean()
                     avg_loss = loss.rolling(window=14).mean()
                     rs = avg_gain / (avg_loss + 1e-10)
-                    df['rsi'] = 100 - (100 / (1 + rs))
+                    df5['rsi'] = 100 - (100 / (1 + rs))
 
-                    ema12 = df['close'].ewm(span=12, adjust=False).mean()
-                    ema26 = df['close'].ewm(span=26, adjust=False).mean()
-                    df['macd'] = ema12 - ema26
-                    df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
+                    ema12 = df5['close'].ewm(span=12, adjust=False).mean()
+                    ema26 = df5['close'].ewm(span=26, adjust=False).mean()
+                    df5['macd'] = ema12 - ema26
+                    df5['macd_signal'] = df5['macd'].ewm(span=9, adjust=False).mean()
 
-                    sma20 = df['close'].rolling(window=20).mean()
-                    std20 = df['close'].rolling(window=20).std()
-                    df['bb_upper'] = sma20 + (2 * std20)
-                    df['bb_lower'] = sma20 - (2 * std20)
-                    df['vol_ma20'] = df['volume'].rolling(window=20).mean()
+                    sma20 = df5['close'].rolling(window=20).mean()
+                    std20 = df5['close'].rolling(window=20).std()
+                    df5['bb_upper'] = sma20 + (2 * std20)
+                    df5['bb_lower'] = sma20 - (2 * std20)
+                    df5['vol_ma20'] = df5['volume'].rolling(window=20).mean()
 
-                    latest = df.iloc[-1]
-                    prev = df.iloc[-2]
+                    latest = df5.iloc[-1]
+                    prev = df5.iloc[-2]
+
+                    current_price = float(latest['close'])
+                    macro_1h_trend = "BULLISH" if current_price >= ema50_1h else "BEARISH"
 
                     return {
-                        "current_price": float(latest['close']),
-                        "volume_24h": float(df['volume'].sum()),
+                        "current_price": current_price,
+                        "volume_24h": float(df5['volume'].sum()),
                         "rsi": float(latest['rsi']),
                         "prev_rsi": float(prev['rsi']),
                         "macd": float(latest['macd']),
@@ -309,39 +325,15 @@ def fetch_ta_data_cached(symbol):
                         "bb_lower": float(latest['bb_lower']),
                         "bb_upper": float(latest['bb_upper']),
                         "volume_spike": float(latest['volume']) >= (float(latest['vol_ma20']) * st.session_state.vol_multiplier),
-                        "macro_trend": "BULLISH" if float(latest['close']) > float(sma20.iloc[-1]) else "BEARISH",
-                        "macro_ema20": float(sma20.iloc[-1])
+                        "macro_1h_trend": macro_1h_trend,
+                        "ema50_1h": float(ema50_1h)
                     }
-    except Exception:
-        pass
-
-    try:
-        base_asset = symbol.replace("USDT", "").replace("USD", "")
-        url = f"https://api.coinbase.com/v2/prices/{base_asset}-USD/spot"
-        r = requests.get(url, headers=HEADERS, timeout=2.0)
-        if r.status_code == 200:
-            price = float(r.json()['data']['amount'])
-            return {
-                "current_price": price,
-                "volume_24h": 1000.0,
-                "rsi": 50.0,
-                "prev_rsi": 49.0,
-                "macd": 0.1,
-                "macd_signal": 0.05,
-                "prev_macd": 0.08,
-                "prev_macd_signal": 0.05,
-                "bb_lower": price * 0.98,
-                "bb_upper": price * 1.02,
-                "volume_spike": True,
-                "macro_trend": "BULLISH",
-                "macro_ema20": price * 0.99
-            }
     except Exception:
         pass
 
     return None
 
-# --- SIGNAL ENGINE ---
+# --- SIGNAL ENGINE WITH MULTI-TIMEFRAME FILTERING ---
 def analyze_market_signal(symbol, data):
     if not data:
         return 0.0, "HOLD", "Data Unavailable"
@@ -351,6 +343,7 @@ def analyze_market_signal(symbol, data):
     short_qty = st.session_state.short_holdings.get(symbol, 0.0)
     entry_price = st.session_state.entry_prices.get(symbol, 0.0)
 
+    # Position Management (TP/SL)
     if long_qty > 0 and entry_price > 0:
         pnl_pct = ((price - entry_price) / entry_price) * 100.0
         if pnl_pct >= st.session_state.take_profit_pct: return price, "SELL", f"Long TP (+{pnl_pct:.2f}%)"
@@ -368,22 +361,20 @@ def analyze_market_signal(symbol, data):
     rsi_turning_down = data['prev_rsi'] > st.session_state.rsi_overbought and data['rsi'] < data['prev_rsi']
     rsi_turning_up = data['prev_rsi'] < st.session_state.rsi_oversold and data['rsi'] > data['prev_rsi']
 
-    if st.session_state.allow_shorts:
-        if data['macro_trend'] != "BULLISH":
-            if (data['rsi'] >= st.session_state.rsi_overbought or rsi_turning_down):
-                if macd_bearish_cross and data['volume_spike']:
-                    return price, "SHORT", f"High-Volume Bearish Reversal (RSI: {data['rsi']:.1f})"
-                elif price >= data['bb_upper'] and data['volume_spike']:
-                    return price, "SHORT", f"Upper BB Breakout Rejection + Vol Spike"
-
-    if data['macro_trend'] == "BULLISH":
+    # --- 1. MULTI-TIMEFRAME LONG CHECK (1H Trend must be Bullish) ---
+    if data['macro_1h_trend'] == "BULLISH":
         if (data['rsi'] <= st.session_state.rsi_oversold or rsi_turning_up) and (data['macd'] > data['macd_signal'] or price <= data['bb_lower']):
-            return price, "BUY", f"Trend-Aligned Buy Dip (1h Bullish | RSI: {data['rsi']:.1f})"
-    else:
-        if rsi_turning_up and macd_bullish_cross:
-            return price, "BUY", f"Bear-Market Reversal Buy (RSI: {data['rsi']:.1f} + MACD Cross)"
+            return price, "BUY", f"1H Trend-Aligned Buy Dip (RSI: {data['rsi']:.1f} | 1H EMA50: ${data['ema50_1h']:,.2f})"
 
-    return price, "HOLD", f"Neutral (RSI: {data['rsi']:.1f} | 1h Trend: {data['macro_trend']})"
+    # --- 2. MULTI-TIMEFRAME SHORT CHECK (1H Trend must be Bearish) ---
+    if st.session_state.allow_shorts and data['macro_1h_trend'] == "BEARISH":
+        if (data['rsi'] >= st.session_state.rsi_overbought or rsi_turning_down):
+            if macd_bearish_cross and data['volume_spike']:
+                return price, "SHORT", f"1H Trend Short Reversal (RSI: {data['rsi']:.1f} | Vol Spike)"
+            elif price >= data['bb_upper'] and data['volume_spike']:
+                return price, "SHORT", f"1H Bearish Upper BB Rejection"
+
+    return price, "HOLD", f"Neutral (RSI: {data['rsi']:.1f} | 1H Trend: {data['macro_1h_trend']})"
 
 # --- RENDER ENGINE ---
 @st.fragment(run_every="10s")
@@ -395,7 +386,6 @@ def render_engine():
         st.info("Select active trading coins in the sidebar.")
         return
 
-    # Multithreaded execution evaluating ALL active coins selected by the user (up to 100)
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         ta_data_list = list(executor.map(fetch_ta_data_cached, st.session_state.selected_symbols))
 
@@ -430,7 +420,6 @@ def render_engine():
                 pl_val = ((entry_price - current_price) / entry_price) * 100
                 pl_str = f"{pl_val:+.2f}%"
 
-            # FILTER: ONLY ADD TOP 10 MOST TRADED COINS TO MAIN PAGE OVERVIEW
             if symbol in TOP_10_HISTORICAL_SYMBOLS:
                 top_10_summary.append({
                     "raw_price": current_price,
@@ -443,7 +432,6 @@ def render_engine():
                     "Reason": reason
                 })
 
-            # TRADING ENGINE: BOT EXECUTES TRADES ON ALL SELECTED COINS
             trade_amt = st.session_state.trade_amount_usdt
             if st.session_state.bot_running:
                 if signal == "BUY" and st.session_state.balance >= trade_amt:
@@ -511,7 +499,6 @@ def render_engine():
     if executed_any_trade:
         save_portfolio()
 
-    # 1. TOP 10 MOST TRADED COINS TABLE PLACED AT THE TOP
     st.subheader("📊 Top 10 Most Traded Coins (Live Overview)")
     if top_10_summary:
         if sort_order == "Price (High to Low)":
@@ -526,7 +513,6 @@ def render_engine():
     else:
         st.warning("Fetching candle data for Top 10 coins...")
 
-    # 2. GLOBAL HISTORICAL TRADE LOG PLACED DIRECTLY BELOW
     st.subheader("📋 Global Multi-Asset Historical Trade Log")
     if len(st.session_state.trade_history) > 0:
         st.table(pd.DataFrame(st.session_state.trade_history).iloc[::-1])
