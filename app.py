@@ -54,7 +54,6 @@ TOP_100_HISTORICAL_SYMBOLS = [
     "POPCATUSDT", "BRETTUSDT", "MOGUSDT", "NEIROUSDT"
 ]
 
-# The top 10 most historically traded coins to show on the front page overview
 TOP_10_HISTORICAL_SYMBOLS = TOP_100_HISTORICAL_SYMBOLS[:10]
 
 @st.cache_data(ttl=3600)
@@ -389,13 +388,6 @@ def analyze_market_signal(symbol, data):
 # --- RENDER ENGINE ---
 @st.fragment(run_every="10s")
 def render_engine():
-    # Trade history log placed above live overview table
-    st.subheader("📋 Global Multi-Asset Historical Trade Log")
-    if len(st.session_state.trade_history) > 0:
-        st.table(pd.DataFrame(st.session_state.trade_history).iloc[::-1])
-    else:
-        st.info("No trades logged yet across your active assets.")
-
     st.metric("Total Cash Balance", f"${st.session_state.balance:,.2f} USDT")
     st.caption(f"🔄 Last Scan: {time.strftime('%H:%M:%S')} | Total Active Coins Evaluated: **{len(st.session_state.selected_symbols)}**")
 
@@ -519,7 +511,7 @@ def render_engine():
     if executed_any_trade:
         save_portfolio()
 
-    # DISPLAY ONLY THE TOP 10 MOST TRADED COINS IN THE LIVE OVERVIEW TABLE
+    # 1. TOP 10 MOST TRADED COINS TABLE PLACED AT THE TOP
     st.subheader("📊 Top 10 Most Traded Coins (Live Overview)")
     if top_10_summary:
         if sort_order == "Price (High to Low)":
@@ -533,5 +525,12 @@ def render_engine():
         st.dataframe(display_df, use_container_width=True)
     else:
         st.warning("Fetching candle data for Top 10 coins...")
+
+    # 2. GLOBAL HISTORICAL TRADE LOG PLACED DIRECTLY BELOW
+    st.subheader("📋 Global Multi-Asset Historical Trade Log")
+    if len(st.session_state.trade_history) > 0:
+        st.table(pd.DataFrame(st.session_state.trade_history).iloc[::-1])
+    else:
+        st.info("No trades logged yet across your active assets.")
 
 render_engine()
