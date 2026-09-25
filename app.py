@@ -9,7 +9,7 @@ import concurrent.futures
 
 st.set_page_config(page_title="24/7 Universal Crypto AI Bot", layout="wide")
 
-st.title("🤖 24/7 Crypto AI Bot (Live TA Engine)")
+st.title("🤖 24/7 Crypto AI Bot (Top 100 Volume Engine)")
 
 PORTFOLIO_FILE = "portfolio.json"
 
@@ -52,25 +52,35 @@ if 'balance' not in st.session_state:
 if 'bot_running' not in st.session_state:
     st.session_state.bot_running = True
 
-# --- MASTER PAIRS LIST (DYNAMIC USDT PAIRS) ---
-@st.cache_data(ttl=3600)
-def fetch_all_usdt_pairs():
-    """Fetches all currently active USDT trading pairs from Binance."""
+# --- DYNAMICALLY FETCH TOP 100 USDT PAIRS BY 24H VOLUME ---
+@st.cache_data(ttl=1800)
+def fetch_top_100_usdt_pairs():
+    """Fetches and sorts the top 100 USDT pairs by 24h quote volume on Binance."""
     try:
-        url = "https://data-api.binance.vision/api/v3/exchangeInfo"
+        url = "https://data-api.binance.vision/api/v3/ticker/24hr"
         res = requests.get(url, timeout=10).json()
         
-        pairs = []
-        for symbol_data in res.get("symbols", []):
-            if symbol_data.get("status") == "TRADING" and symbol_data.get("symbol", "").endswith("USDT"):
-                pairs.append(symbol_data.get("symbol"))
-                
-        return sorted(pairs) if pairs else ["BTCUSDT", "ETHUSDT"]
+        usdt_pairs = []
+        for ticker in res:
+            symbol = ticker.get("symbol", "")
+            # Filter for active trading USDT spot pairs (excluding leveraged tokens if any)
+            if symbol.endswith("USDT") and not any(x in symbol for x in ["UPUSDT", "DOWNUSDT", "BEARUSDT", "BULLUSDT"]):
+                try:
+                    quote_volume = float(ticker.get("quoteVolume", 0))
+                    usdt_pairs.append((symbol, quote_volume))
+                except ValueError:
+                    continue
+        
+        # Sort by 24h quote volume descending and slice top 100
+        usdt_pairs.sort(key=lambda x: x[1], reverse=True)
+        top_100 = [item[0] for item in usdt_pairs[:100]]
+        
+        return top_100 if top_100 else ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
         
     except Exception:
         return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT"]
 
-ALL_BINANCE_PAIRS = fetch_all_usdt_pairs()
+ALL_BINANCE_PAIRS = fetch_top_100_usdt_pairs()
 
 # --- SIDEBAR CONFIGURATION ---
 st.sidebar.header("⚙️ Bot Settings")
@@ -100,13 +110,12 @@ st.sidebar.subheader("📊 Technical Indicator Sensitivity")
 rsi_oversold = st.sidebar.slider("RSI Oversold (Buy Threshold)", 15, 45, 30, 1)
 rsi_overbought = st.sidebar.slider("RSI Overbought (Short Threshold)", 55, 85, 70, 1)
 
-default_pairs = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT"]
-valid_defaults = [p for p in default_pairs if p in ALL_BINANCE_PAIRS]
+default_pairs = ALL_BINANCE_PAIRS[:20]  # Pre-select top 20 by default for optimal performance
 
 selected_symbols = st.sidebar.multiselect(
-    f"Select Trading Pairs ({len(ALL_BINANCE_PAIRS)} Available)",
+    f"Select Trading Pairs ({len(ALL_BINANCE_PAIRS)} High-Volume Coins Available)",
     options=ALL_BINANCE_PAIRS,
-    default=valid_defaults
+    default=default_pairs
 )
 
 if st.sidebar.button("🔄 Reset Portfolio ($1,000 USDT)"):
@@ -146,13 +155,12 @@ else:
 # --- FETCH REAL BINANCE OHLC CANDLES & COMPUTE TA INDICATORS ---
 def fetch_ta_data(symbol, interval="5m"):
     """
-    Pure network fetcher for background threads.
-    Does not access Streamlit UI or session state.
+    Pure network fetcher optimized with thread timeout safety.
     """
     try:
         formatted_symbol = symbol.replace("/", "").replace("-", "").upper()
         url = f"https://data-api.binance.vision/api/v3/klines?symbol={formatted_symbol}&interval={interval}&limit=100"
-        res = requests.get(url, timeout=10).json()
+        res = requests.get(url, timeout=3).json()
         
         if isinstance(res, dict) and "code" in res:
             return None
@@ -260,7 +268,7 @@ def analyze_market_signal(symbol, data):
     return price, "HOLD", f"Neutral (RSI: {data['rsi']:.1f} | MACD Neutral)"
 
 # --- AUTOMATED ENGINE FRAGMENT ---
-@st.fragment(run_every="10s")
+@st.fragment(run_every="20s")
 def automated_trading_engine():
     st.metric("Total Cash Balance", f"${st.session_state.balance:,.2f} USDT")
     st.caption(f"🔄 Last Scan: {time.strftime('%H:%M:%S')} | Active Pairs: **{len(selected_symbols)}**")
@@ -272,8 +280,8 @@ def automated_trading_engine():
     market_summary = []
     executed_any_trade = False
 
-    # Parallel HTTP fetching across background threads
-    with concurrent.futures.ThreadPoolExecutor() as executor:
+    # Parallel HTTP fetching across background threads with concurrency limits
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
         ta_data_list = list(executor.map(fetch_ta_data, selected_symbols))
 
     # Signal calculation on main Streamlit thread
