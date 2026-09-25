@@ -51,25 +51,11 @@ if 'balance' not in st.session_state:
 if 'bot_running' not in st.session_state:
     st.session_state.bot_running = True
 
-# --- FETCH ALL KRAKEN EUR PAIRS ---
-@st.cache_data(ttl=3600)
-def get_kraken_eur_pairs():
-    try:
-        url = "https://api.kraken.com/0/public/AssetPairs"
-        res = requests.get(url, timeout=10).json()
-        pair_map = {}
-        pair_list = []
-        if 'result' in res:
-            for internal_name, data in res['result'].items():
-                altname = data.get('altname', '')
-                if altname.endswith('EUR') and '.d' not in altname:
-                    pair_map[internal_name] = altname
-                    pair_list.append(altname)
-        return sorted(pair_list), pair_map
-    except Exception:
-        return ["XBTEUR", "ETHEUR", "SOLEUR"], {"XXBTZEUR": "XBTEUR", "XETHZEUR": "ETHEUR"}
-
-ALL_KRAKEN_PAIRS, PAIR_MAP = get_kraken_eur_pairs()
+# --- MASTER PAIRS LIST ---
+ALL_BINANCE_PAIRS = [
+    "BTCEUR", "ETHEUR", "SOLEUR", "XRPEUR", "ADAEUR", 
+    "DOGEEUR", "AVAXEUR", "LINKEUR", "DOTEUR", "MATICEUR"
+]
 
 # --- SIDEBAR CONFIGURATION ---
 st.sidebar.header("⚙️ Bot Settings")
@@ -207,7 +193,6 @@ def fetch_ta_data(symbol, interval="5m"):
 
     except Exception:
         return None
-
 
 # --- MULTI-INDICATOR SIGNAL ENGINE ---
 def analyze_market_signal(symbol):
@@ -398,7 +383,7 @@ def automated_trading_engine():
         display_df = pd.DataFrame(market_summary).drop(columns=['raw_price'])
         st.dataframe(display_df, use_container_width=True)
     else:
-        st.warning("Fetching candle data from Kraken...")
+        st.warning("Fetching candle data from Binance...")
 
     st.subheader("📋 Multi-Asset Trade Log")
     if len(st.session_state.trade_history) > 0:
