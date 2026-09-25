@@ -28,7 +28,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- AUTOMATIC BROWSER REFRESH (EVERY 10 SECONDS) ---
-st_autorefresh(interval=10000, limit=None, key="bot_autorefresh_loop")
+st_autorefresh(interval=10000, limit=None)
 
 st.title("🤖 24/7 Crypto AI Bot (1H Multi-Timeframe Strategy)")
 
