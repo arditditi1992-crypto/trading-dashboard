@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import requests
 import time
 import json
@@ -30,25 +29,34 @@ PORTFOLIO_FILE = "portfolio.json"
 
 @st.cache_data(ttl=1800)
 def fetch_top_usdt_pairs():
-    try:
-        url = "https://data-api.binance.vision/api/v3/ticker/24hr"
-        res = requests.get(url, timeout=10).json()
-        usdt_pairs = []
-        excluded_keywords = ["UPUSDT", "DOWNUSDT", "BEARUSDT", "BULLUSDT", "NVDAB", "AAPLB", "TSLAB"]
-        
-        for ticker in res:
-            symbol = ticker.get("symbol", "")
-            if symbol.endswith("USDT") and not any(x in symbol for x in excluded_keywords):
-                try:
-                    quote_volume = float(ticker.get("quoteVolume", 0))
-                    usdt_pairs.append((symbol, quote_volume))
-                except ValueError:
-                    continue
-        usdt_pairs.sort(key=lambda x: x[1], reverse=True)
-        top_pairs = [item[0] for item in usdt_pairs[:50]]
-        return top_pairs if top_pairs else ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT"]
-    except Exception:
-        return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT"]
+    # Endpoints to try if main Binance blocks US cloud servers
+    endpoints = [
+        "https://api.binance.com/api/v3/ticker/24hr",
+        "https://data-api.binance.vision/api/v3/ticker/24hr",
+        "https://api.binance.us/api/v3/ticker/24hr"
+    ]
+    for url in endpoints:
+        try:
+            res = requests.get(url, timeout=5).json()
+            if isinstance(res, list):
+                usdt_pairs = []
+                excluded = ["UPUSDT", "DOWNUSDT", "BEARUSDT", "BULLUSDT", "NVDAB", "AAPLB", "TSLAB"]
+                for ticker in res:
+                    symbol = ticker.get("symbol", "")
+                    if symbol.endswith("USDT") and not any(x in symbol for x in excluded):
+                        try:
+                            vol = float(ticker.get("quoteVolume", 0))
+                            usdt_pairs.append((symbol, vol))
+                        except ValueError:
+                            continue
+                usdt_pairs.sort(key=lambda x: x[1], reverse=True)
+                top_pairs = [item[0] for item in usdt_pairs[:50]]
+                if top_pairs:
+                    return top_pairs
+        except Exception:
+            continue
+            
+    return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "BNBUSDT", "AVAXUSDT"]
 
 ALL_BINANCE_PAIRS = fetch_top_usdt_pairs()
 
@@ -70,7 +78,7 @@ def load_portfolio():
         "stop_loss_pct": 2.5,
         "rsi_oversold": 30,
         "rsi_overbought": 72,
-        "selected_symbols": ALL_BINANCE_PAIRS[:15],
+        "selected_symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
         "allow_shorts": True,
         "vol_multiplier": 1.3
     }
@@ -87,7 +95,7 @@ def save_portfolio():
         "stop_loss_pct": st.session_state.get("stop_loss_pct", 2.5),
         "rsi_oversold": st.session_state.get("rsi_oversold", 30),
         "rsi_overbought": st.session_state.get("rsi_overbought", 72),
-        "selected_symbols": st.session_state.get("selected_symbols", ALL_BINANCE_PAIRS[:15]),
+        "selected_symbols": st.session_state.get("selected_symbols", ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]),
         "allow_shorts": st.session_state.get("allow_shorts", True),
         "vol_multiplier": st.session_state.get("vol_multiplier", 1.3)
     }
@@ -143,12 +151,11 @@ st.session_state.rsi_oversold = rsi_oversold
 rsi_overbought = st.sidebar.slider("RSI Overbought (Short)", 55, 90, int(saved_data.get("rsi_overbought", 72)), 1, key="rsi_ob_slider")
 st.session_state.rsi_overbought = rsi_overbought
 
-# Limit default selection to 15 pairs max
-valid_defaults = [s for s in saved_data.get("selected_symbols", ALL_BINANCE_PAIRS[:15]) if s in ALL_BINANCE_PAIRS]
+valid_defaults = [s for s in saved_data.get("selected_symbols", ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]) if s in ALL_BINANCE_PAIRS]
 selected_symbols = st.sidebar.multiselect(
     f"Select Trading Pairs ({len(ALL_BINANCE_PAIRS)} Available)",
     options=ALL_BINANCE_PAIRS,
-    default=valid_defaults[:15],
+    default=valid_defaults if valid_defaults else ALL_BINANCE_PAIRS[:4],
     key="selected_symbols_multi"
 )
 st.session_state.selected_symbols = selected_symbols
@@ -161,7 +168,7 @@ if st.sidebar.button("🔄 Reset Portfolio ($1,000 USDT)", key="reset_btn"):
     st.session_state.short_holdings = {}
     st.session_state.entry_prices = {}
     st.session_state.trade_history = []
-    st.session_state.selected_symbols = ALL_BINANCE_PAIRS[:15]
+    st.session_state.selected_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
     st.rerun()
 
 save_portfolio()
@@ -187,21 +194,38 @@ if st.session_state.bot_running:
 else:
     st.warning("🔴 STATUS: BOT PAUSED")
 
-# --- TA DATA FETCHING ---
+# --- TA DATA FETCHING WITH FALLBACK ENDPOINTS ---
 @st.cache_data(ttl=12, show_spinner=False)
 def fetch_ta_data_cached(symbol):
+    formatted_symbol = symbol.replace("/", "").replace("-", "").upper()
+    
+    # Try multiple domain mirrors to bypass regional/cloud IP blocks
+    base_urls = [
+        "https://api.binance.com",
+        "https://data-api.binance.vision",
+        "https://api.binance.us"
+    ]
+
+    res_5m = None
+    for base in base_urls:
+        try:
+            url_5m = f"{base}/api/v3/klines?symbol={formatted_symbol}&interval=5m&limit=50"
+            r = requests.get(url_5m, timeout=3.0)
+            if r.status_code == 200:
+                data = r.json()
+                if isinstance(data, list) and len(data) >= 30:
+                    res_5m = data
+                    break
+        except Exception:
+            continue
+
+    if res_5m is None:
+        return None
+
     try:
-        formatted_symbol = symbol.replace("/", "").replace("-", "").upper()
-
-        url_5m = f"https://data-api.binance.vision/api/v3/klines?symbol={formatted_symbol}&interval=5m&limit=50"
-        res_5m = requests.get(url_5m, timeout=3.0).json()
-        
-        if isinstance(res_5m, dict) or not isinstance(res_5m, list): return None
-
         df_5m = pd.DataFrame(res_5m, columns=['time', 'open', 'high', 'low', 'close', 'volume', 'ct', 'qav', 'nt', 'tba', 'tbq', 'ig'])
         df_5m['close'] = df_5m['close'].astype(float)
         df_5m['volume'] = df_5m['volume'].astype(float)
-        if len(df_5m) < 30: return None
 
         delta = df_5m['close'].diff()
         gain = delta.clip(lower=0)
@@ -225,12 +249,23 @@ def fetch_ta_data_cached(symbol):
         latest_5m = df_5m.iloc[-1]
         prev_5m = df_5m.iloc[-2]
 
-        url_1h = f"https://data-api.binance.vision/api/v3/klines?symbol={formatted_symbol}&interval=1h&limit=50"
-        res_1h = requests.get(url_1h, timeout=3.0).json()
-        
+        # 1-Hour candle fetch
+        res_1h = None
+        for base in base_urls:
+            try:
+                url_1h = f"{base}/api/v3/klines?symbol={formatted_symbol}&interval=1h&limit=50"
+                r = requests.get(url_1h, timeout=3.0)
+                if r.status_code == 200:
+                    data = r.json()
+                    if isinstance(data, list) and len(data) >= 30:
+                        res_1h = data
+                        break
+            except Exception:
+                continue
+
         macro_trend = "NEUTRAL"
         macro_ema20 = 0.0
-        if isinstance(res_1h, list) and len(res_1h) >= 30:
+        if res_1h is not None:
             df_1h = pd.DataFrame(res_1h, columns=['time', 'open', 'high', 'low', 'close', 'volume', 'ct', 'qav', 'nt', 'tba', 'tbq', 'ig'])
             df_1h['close'] = df_1h['close'].astype(float)
             df_1h['ema20'] = df_1h['close'].ewm(span=20, adjust=False).mean()
@@ -312,7 +347,7 @@ def render_engine():
         st.info("Select trading pairs in the sidebar.")
         return
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         ta_data_list = list(executor.map(fetch_ta_data_cached, st.session_state.selected_symbols))
 
     market_summary = []
