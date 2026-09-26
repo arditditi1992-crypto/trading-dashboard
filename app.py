@@ -196,7 +196,7 @@ def fetch_all_live_prices():
         pass
     return {}
 
-# 2. Caches the heavy historical data for 5 minutes (prevents rate limits)
+# 2. Caches historical data for 5 minutes (prevents rate limits)
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_historical_candles(symbol):
     try:
@@ -225,12 +225,11 @@ def fetch_historical_candles(symbol):
         pass
     return None
 
-# 3. Stitch live price to the cached history and calculate mathematically accurate indicators
+# 3. Indicator calculation logic
 def calculate_live_indicators(history, live_price, vol_multiplier):
     df5 = history["df5"].copy()
     df1h = history["df1h"].copy()
 
-    # Update the last candle close price with the real-time live ticker
     df5.at[df5.index[-1], 'close'] = live_price
     df1h.at[df1h.index[-1], 'close'] = live_price
 
@@ -282,7 +281,6 @@ def analyze_market_signal(symbol, data):
     short_qty = st.session_state.short_holdings.get(symbol, 0.0)
     entry_price = st.session_state.entry_prices.get(symbol, 0.0)
 
-    # 100% Real-Time SL/TP Evaluation based on Live Price
     if long_qty > 0 and entry_price > 0:
         pnl_pct = ((price - entry_price) / entry_price) * 100.0
         if pnl_pct >= st.session_state.take_profit_pct: return price, "SELL", f"Long TP (+{pnl_pct:.2f}%)"
@@ -324,29 +322,56 @@ def render_engine():
     # FETCH 1: Instantly get ALL live prices across the market
     live_prices = fetch_all_live_prices()
 
-    # FETCH 2: Maintain cached historical candle logic silently in background
+    # IMMEDIATELY populate Top 10 Summary directly from live_prices
+    top_10_summary = []
+    for symbol in TOP_10_HISTORICAL_SYMBOLS:
+        current_price = live_prices.get(symbol, 0.0)
+        
+        long_qty = st.session_state.holdings.get(symbol, 0.0)
+        short_qty = st.session_state.short_holdings.get(symbol, 0.0)
+        entry_price = st.session_state.entry_prices.get(symbol, 0.0)
+
+        position_type = "NONE"
+        pl_str = "0.00%"
+
+        if long_qty > 0 and entry_price > 0:
+            position_type = "LONG"
+            raw_pl = ((current_price - entry_price) / entry_price) * 100
+            pl_str = f"{raw_pl:+.2f}%"
+        elif short_qty > 0 and entry_price > 0:
+            position_type = "SHORT"
+            raw_pl = ((entry_price - current_price) / entry_price) * 100
+            pl_str = f"{raw_pl:+.2f}%"
+
+        if current_price > 0:
+            top_10_summary.append({
+                "Asset": symbol,
+                "Price": f"${current_price:,.4f}" if current_price < 1 else f"${current_price:,.2f}",
+                "Position": position_type if position_type != "NONE" else "-",
+                "Current P/L": pl_str if position_type != "NONE" else "-",
+                "Signal": "HOLD",
+                "Reason": "⚡ Live Price Active"
+            })
+
+    # FETCH 2: Fetch historical data for active trading analysis
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         cached_histories = list(executor.map(fetch_historical_candles, st.session_state.selected_symbols))
 
-    top_10_summary = []
     active_positions_summary = []
     executed_any_trade = False
 
     for symbol, history in zip(st.session_state.selected_symbols, cached_histories):
         live_price = live_prices.get(symbol, 0.0)
-        
-        # Skip only if the live price endpoint failed completely
         if live_price == 0.0:
             continue
 
-        # If historical candles are ready, calculate signals; otherwise fall back safely
         if history is not None:
             ta_data = calculate_live_indicators(history, live_price, st.session_state.vol_multiplier)
             current_price, signal, reason = analyze_market_signal(symbol, ta_data)
         else:
             current_price = live_price
             signal = "HOLD"
-            reason = "⏳ Loading historical indicator data..."
+            reason = "⏳ Loading historical candles..."
 
         long_qty = st.session_state.holdings.get(symbol, 0.0)
         short_qty = st.session_state.short_holdings.get(symbol, 0.0)
@@ -374,16 +399,6 @@ def render_engine():
                 "Current P/L": pl_str,
                 "Signal": signal,
                 "raw_pl": raw_pl
-            })
-
-        if symbol in TOP_10_HISTORICAL_SYMBOLS:
-            top_10_summary.append({
-                "Asset": symbol,
-                "Price": f"${current_price:,.4f}" if current_price < 1 else f"${current_price:,.2f}",
-                "Position": position_type if position_type != "NONE" else "-",
-                "Current P/L": pl_str if position_type != "NONE" else "-",
-                "Signal": signal,
-                "Reason": reason
             })
 
         trade_amt = st.session_state.trade_amount_usdt
