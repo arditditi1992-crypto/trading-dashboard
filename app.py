@@ -335,13 +335,19 @@ def render_engine():
     for symbol, history in zip(st.session_state.selected_symbols, cached_histories):
         live_price = live_prices.get(symbol, 0.0)
         
-        if history is None or live_price == 0.0:
+        # Skip only if the live price endpoint failed completely
+        if live_price == 0.0:
             continue
 
-        # Stitch and analyze signals instantly using the live price
-        ta_data = calculate_live_indicators(history, live_price, st.session_state.vol_multiplier)
-        current_price, signal, reason = analyze_market_signal(symbol, ta_data)
-        
+        # If historical candles are ready, calculate signals; otherwise fall back safely
+        if history is not None:
+            ta_data = calculate_live_indicators(history, live_price, st.session_state.vol_multiplier)
+            current_price, signal, reason = analyze_market_signal(symbol, ta_data)
+        else:
+            current_price = live_price
+            signal = "HOLD"
+            reason = "⏳ Loading historical indicator data..."
+
         long_qty = st.session_state.holdings.get(symbol, 0.0)
         short_qty = st.session_state.short_holdings.get(symbol, 0.0)
         entry_price = st.session_state.entry_prices.get(symbol, 0.0)
@@ -381,7 +387,7 @@ def render_engine():
             })
 
         trade_amt = st.session_state.trade_amount_usdt
-        if st.session_state.bot_running:
+        if st.session_state.bot_running and history is not None:
             if signal == "BUY" and st.session_state.balance >= trade_amt:
                 coins_bought = trade_amt / current_price
                 st.session_state.balance -= trade_amt
@@ -436,6 +442,8 @@ def render_engine():
     st.subheader("📊 Top 10 Most Traded Coins (Live Overview)")
     if top_10_summary:
         st.dataframe(pd.DataFrame(top_10_summary), use_container_width=True)
+    else:
+        st.info("⏳ Initializing top 10 market data...")
 
     st.subheader("📋 Global Multi-Asset Historical Trade Log")
     if len(st.session_state.trade_history) > 0:
