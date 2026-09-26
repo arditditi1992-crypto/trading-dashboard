@@ -25,7 +25,6 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 10 SECOND REFRESH - Safe to use because live prices are bulk-fetched
 st_autorefresh(interval=10000, limit=None)
 
 st.title("🤖 24/7 Crypto AI Bot (Hybrid Live-Tick Engine)")
@@ -183,28 +182,35 @@ if st.session_state.bot_running:
 else:
     st.warning("🔴 STATUS: BOT PAUSED")
 
-# --- HYBRID DATA ENGINE ---
+# --- DATA FETCHING WITH FAILSAFE API ---
 
-# 1. Fetches all live prices globally in ONE request every 10 seconds
-@st.cache_data(ttl=10, show_spinner=False)
 def fetch_all_live_prices():
+    # Primary API: Binance
     try:
-        r = requests.get("https://api.binance.com/api/v3/ticker/price", timeout=5.0)
+        r = requests.get("https://api.binance.com/api/v3/ticker/price", timeout=4.0)
         if r.status_code == 200:
             return {item['symbol']: float(item['price']) for item in r.json()}
     except Exception:
         pass
+
+    # Secondary API Fallback: Binance US / Alternative Endpoint
+    try:
+        r = requests.get("https://api.binance.us/api/v3/ticker/price", timeout=4.0)
+        if r.status_code == 200:
+            return {item['symbol']: float(item['price']) for item in r.json()}
+    except Exception:
+        pass
+
     return {}
 
-# 2. Caches historical data for 5 minutes (prevents rate limits)
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_historical_candles(symbol):
     try:
         url_5m = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=5m&limit=50"
-        r_5m = requests.get(url_5m, timeout=5.0)
+        r_5m = requests.get(url_5m, timeout=4.0)
 
         url_1h = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=50"
-        r_1h = requests.get(url_1h, timeout=5.0)
+        r_1h = requests.get(url_1h, timeout=4.0)
 
         if r_5m.status_code == 200 and r_1h.status_code == 200:
             candles_5m = r_5m.json()
@@ -225,7 +231,6 @@ def fetch_historical_candles(symbol):
         pass
     return None
 
-# 3. Indicator calculation logic
 def calculate_live_indicators(history, live_price, vol_multiplier):
     df5 = history["df5"].copy()
     df1h = history["df1h"].copy()
@@ -315,14 +320,14 @@ def render_engine():
     st.metric("Total Cash Balance", f"${st.session_state.balance:,.2f} USDT")
     current_time_str = datetime.now().strftime("%H:%M:%S")
 
-    if not st.session_state.selected_symbols:
-        st.info("Select active trading coins in the sidebar.")
-        return
-
-    # FETCH 1: Instantly get ALL live prices across the market
     live_prices = fetch_all_live_prices()
 
-    # IMMEDIATELY populate Top 10 Summary directly from live_prices
+    # Active open positions list initialization
+    active_positions_summary = []
+
+    # Display Top 10 Section directly
+    st.subheader("📊 Top 10 Most Traded Coins (Live Overview)")
+    
     top_10_summary = []
     for symbol in TOP_10_HISTORICAL_SYMBOLS:
         current_price = live_prices.get(symbol, 0.0)
@@ -343,21 +348,28 @@ def render_engine():
             raw_pl = ((entry_price - current_price) / entry_price) * 100
             pl_str = f"{raw_pl:+.2f}%"
 
-        if current_price > 0:
-            top_10_summary.append({
-                "Asset": symbol,
-                "Price": f"${current_price:,.4f}" if current_price < 1 else f"${current_price:,.2f}",
-                "Position": position_type if position_type != "NONE" else "-",
-                "Current P/L": pl_str if position_type != "NONE" else "-",
-                "Signal": "HOLD",
-                "Reason": "⚡ Live Price Active"
-            })
+        price_fmt = f"${current_price:,.4f}" if current_price < 1 and current_price > 0 else f"${current_price:,.2f}"
+        if current_price == 0.0:
+            price_fmt = "Connecting..."
 
-    # FETCH 2: Fetch historical data for active trading analysis
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        top_10_summary.append({
+            "Asset": symbol,
+            "Price": price_fmt,
+            "Position": position_type if position_type != "NONE" else "-",
+            "Current P/L": pl_str if position_type != "NONE" else "-",
+            "Signal": "HOLD",
+            "Reason": "⚡ Live Price Stream"
+        })
+
+    if top_10_summary:
+        st.dataframe(pd.DataFrame(top_10_summary), use_container_width=True)
+
+    st.write("---")
+
+    # Historical Threads Processing
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         cached_histories = list(executor.map(fetch_historical_candles, st.session_state.selected_symbols))
 
-    active_positions_summary = []
     executed_any_trade = False
 
     for symbol, history in zip(st.session_state.selected_symbols, cached_histories):
@@ -371,7 +383,7 @@ def render_engine():
         else:
             current_price = live_price
             signal = "HOLD"
-            reason = "⏳ Loading historical candles..."
+            reason = "⏳ Syncing Indicators..."
 
         long_qty = st.session_state.holdings.get(symbol, 0.0)
         short_qty = st.session_state.short_holdings.get(symbol, 0.0)
@@ -451,14 +463,6 @@ def render_engine():
         st.dataframe(display_positions, use_container_width=True)
     else:
         st.info("You currently have no open trades.")
-
-    st.write("---")
-
-    st.subheader("📊 Top 10 Most Traded Coins (Live Overview)")
-    if top_10_summary:
-        st.dataframe(pd.DataFrame(top_10_summary), use_container_width=True)
-    else:
-        st.info("⏳ Initializing top 10 market data...")
 
     st.subheader("📋 Global Multi-Asset Historical Trade Log")
     if len(st.session_state.trade_history) > 0:
