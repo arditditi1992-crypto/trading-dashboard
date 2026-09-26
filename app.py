@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import requests
-import time
 import json
 import os
 import concurrent.futures
@@ -11,7 +10,6 @@ from streamlit_autorefresh import st_autorefresh
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="24/7 Multi-Timeframe Crypto AI Bot", layout="wide")
 
-# Hide Streamlit spinner/status overlays for smooth background updating
 st.markdown("""
     <style>
     [data-testid="stVerticalBlock"] > div,
@@ -27,17 +25,12 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- AUTOMATIC BROWSER REFRESH (EVERY 10 SECONDS) ---
+# 10 SECOND REFRESH - Safe to use because live prices are bulk-fetched
 st_autorefresh(interval=10000, limit=None)
 
-st.title("🤖 24/7 Crypto AI Bot (1H Multi-Timeframe Strategy)")
+st.title("🤖 24/7 Crypto AI Bot (Hybrid Live-Tick Engine)")
 
 PORTFOLIO_FILE = "portfolio.json"
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "application/json"
-}
 
 TOP_100_HISTORICAL_SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", 
@@ -57,55 +50,6 @@ TOP_100_HISTORICAL_SYMBOLS = [
 ]
 
 TOP_10_HISTORICAL_SYMBOLS = TOP_100_HISTORICAL_SYMBOLS[:10]
-
-@st.cache_data(ttl=3600)
-def build_coin_directory():
-    pairs_map = {}
-    price_map = {}
-
-    try:
-        url = "https://api.kraken.com/0/public/AssetPairs"
-        r = requests.get(url, headers=HEADERS, timeout=5.0)
-        if r.status_code == 200:
-            res = r.json()
-            if not res.get("error") and "result" in res:
-                kraken_pairs = res["result"]
-                for sym in TOP_100_HISTORICAL_SYMBOLS:
-                    base = sym.replace("USDT", "").replace("USD", "")
-                    found = False
-                    for p_key, p_info in kraken_pairs.items():
-                        altname = p_info.get("altname", "")
-                        wsname = p_info.get("wsname", "")
-                        if base in altname or f"{base}/" in wsname:
-                            pairs_map[sym] = p_key
-                            found = True
-                            break
-                    if not found:
-                        pairs_map[sym] = sym
-    except Exception:
-        for sym in TOP_100_HISTORICAL_SYMBOLS:
-            pairs_map[sym] = sym
-
-    try:
-        ticker_url = "https://api.kraken.com/0/public/Ticker"
-        tr = requests.get(ticker_url, headers=HEADERS, timeout=4.0)
-        if tr.status_code == 200 and "result" in tr.json():
-            tdata = tr.json()["result"]
-            for sym in TOP_100_HISTORICAL_SYMBOLS:
-                p_id = pairs_map.get(sym, sym)
-                if p_id in tdata:
-                    price_map[sym] = float(tdata[p_id]["c"][0])
-                elif sym in tdata:
-                    price_map[sym] = float(tdata[sym]["c"][0])
-                else:
-                    price_map[sym] = 0.0
-    except Exception:
-        for sym in TOP_100_HISTORICAL_SYMBOLS:
-            price_map[sym] = 0.0
-
-    return pairs_map, price_map
-
-PAIR_LOOKUP_MAP, REFERENCE_PRICE_MAP = build_coin_directory()
 ALL_TRADING_SYMBOLS = TOP_100_HISTORICAL_SYMBOLS
 
 def load_portfolio():
@@ -158,7 +102,6 @@ if 'short_holdings' not in st.session_state: st.session_state.short_holdings = s
 if 'entry_prices' not in st.session_state: st.session_state.entry_prices = saved_data.get("entry_prices", {})
 if 'trade_history' not in st.session_state: st.session_state.trade_history = saved_data.get("trade_history", [])
 if 'bot_running' not in st.session_state: st.session_state.bot_running = True
-if 'last_valid_ta' not in st.session_state: st.session_state.last_valid_ta = {}
 
 # --- SIDEBAR CONFIGURATION ---
 st.sidebar.header("⚙️ Bot Settings")
@@ -172,7 +115,7 @@ with sb_col1:
     st.session_state.trade_amount_usdt = trade_amount_usdt
 
 with sb_col2:
-    sort_order = st.selectbox("Sort Overview By", ["Price (High to Low)", "Price (Low to High)", "Alphabetical"])
+    sort_order = st.selectbox("Sort Overview By", ["Alphabetical", "Current P/L"])
 
 st.sidebar.subheader("🛡️ Short Protection Controls")
 allow_shorts = st.sidebar.checkbox("Enable Short Positions", value=saved_data.get("allow_shorts", True))
@@ -198,23 +141,10 @@ st.session_state.rsi_oversold = rsi_oversold
 rsi_overbought = st.sidebar.slider("RSI Overbought (Short)", 55, 90, int(saved_data.get("rsi_overbought", 72)), 1)
 st.session_state.rsi_overbought = rsi_overbought
 
-st.sidebar.subheader("🔍 Coin Directory & Selection")
-coin_sort_choice = st.sidebar.selectbox(
-    "Sort Coin Selection List By",
-    ["High/Low Price", "Low/High Price", "Alphabetical"]
-)
-
-if coin_sort_choice == "High/Low Price":
-    sorted_coins = sorted(ALL_TRADING_SYMBOLS, key=lambda s: REFERENCE_PRICE_MAP.get(s, 0.0), reverse=True)
-elif coin_sort_choice == "Low/High Price":
-    sorted_coins = sorted(ALL_TRADING_SYMBOLS, key=lambda s: REFERENCE_PRICE_MAP.get(s, 0.0), reverse=False)
-else:
-    sorted_coins = sorted(ALL_TRADING_SYMBOLS)
-
 valid_defaults = [s for s in saved_data.get("selected_symbols", ALL_TRADING_SYMBOLS) if s in ALL_TRADING_SYMBOLS]
 selected_symbols = st.sidebar.multiselect(
     f"Active Trading Coins ({len(ALL_TRADING_SYMBOLS)} Top Volume Coins)",
-    options=sorted_coins,
+    options=sorted(ALL_TRADING_SYMBOLS),
     default=valid_defaults if valid_defaults else ALL_TRADING_SYMBOLS
 )
 st.session_state.selected_symbols = selected_symbols
@@ -228,7 +158,6 @@ if st.sidebar.button("🔄 Reset Portfolio ($1,000 USDT)"):
     st.session_state.entry_prices = {}
     st.session_state.trade_history = []
     st.session_state.selected_symbols = ALL_TRADING_SYMBOLS
-    st.session_state.last_valid_ta = {}
     st.rerun()
 
 save_portfolio()
@@ -250,99 +179,110 @@ with col_stop:
         st.toast("Bot paused.", icon="🔴")
 
 if st.session_state.bot_running:
-    st.success(f"🟢 STATUS: BOT ACTIVE (Trading All Selected Market Coins — Total Active: {len(st.session_state.selected_symbols)})")
+    st.success(f"🟢 STATUS: BOT ACTIVE (Trading {len(st.session_state.selected_symbols)} Coins via Hybrid Live-Tick Engine)")
 else:
     st.warning("🔴 STATUS: BOT PAUSED")
 
-# --- REAL-TIME MULTI-TIMEFRAME DATA ENGINE (LOW-LATENCY CACHE) ---
-@st.cache_data(ttl=5, show_spinner=False)
-def fetch_ta_data_cached(symbol):
-    pair_id = PAIR_LOOKUP_MAP.get(symbol, symbol)
-    
+# --- HYBRID DATA ENGINE ---
+
+# 1. Fetches all live prices globally in ONE request every 10 seconds
+@st.cache_data(ttl=10, show_spinner=False)
+def fetch_all_live_prices():
     try:
-        url_5m = f"https://api.kraken.com/0/public/OHLC?pair={pair_id}&interval=5"
-        r_5m = requests.get(url_5m, headers=HEADERS, timeout=5.0)
-
-        url_1h = f"https://api.kraken.com/0/public/OHLC?pair={pair_id}&interval=60"
-        r_1h = requests.get(url_1h, headers=HEADERS, timeout=5.0)
-
-        if r_5m.status_code == 200 and r_1h.status_code == 200:
-            res_5m = r_5m.json()
-            res_1h = r_1h.json()
-
-            if not res_5m.get("error") and not res_1h.get("error"):
-                p_key_5m = list(res_5m["result"].keys())[0]
-                p_key_1h = list(res_1h["result"].keys())[0]
-
-                candles_5m = res_5m["result"][p_key_5m]
-                candles_1h = res_1h["result"][p_key_1h]
-
-                if len(candles_5m) >= 20 and len(candles_1h) >= 20:
-                    df5 = pd.DataFrame(candles_5m, columns=['time', 'open', 'high', 'low', 'close', 'vwap', 'volume', 'count'])
-                    df5['close'] = df5['close'].astype(float)
-                    df5['volume'] = df5['volume'].astype(float)
-
-                    df1h = pd.DataFrame(candles_1h, columns=['time', 'open', 'high', 'low', 'close', 'vwap', 'volume', 'count'])
-                    df1h['close'] = df1h['close'].astype(float)
-                    
-                    span_val = min(50, len(df1h))
-                    ema50_1h = df1h['close'].ewm(span=span_val, adjust=False).mean().iloc[-1]
-
-                    delta = df5['close'].diff()
-                    gain = delta.clip(lower=0)
-                    loss = -delta.clip(upper=0)
-                    avg_gain = gain.rolling(window=14).mean()
-                    avg_loss = loss.rolling(window=14).mean()
-                    rs = avg_gain / (avg_loss + 1e-10)
-                    df5['rsi'] = 100 - (100 / (1 + rs))
-
-                    ema12 = df5['close'].ewm(span=12, adjust=False).mean()
-                    ema26 = df5['close'].ewm(span=26, adjust=False).mean()
-                    df5['macd'] = ema12 - ema26
-                    df5['macd_signal'] = df5['macd'].ewm(span=9, adjust=False).mean()
-
-                    sma20 = df5['close'].rolling(window=20).mean()
-                    std20 = df5['close'].rolling(window=20).std()
-                    df5['bb_upper'] = sma20 + (2 * std20)
-                    df5['bb_lower'] = sma20 - (2 * std20)
-                    df5['vol_ma20'] = df5['volume'].rolling(window=20).mean()
-
-                    latest = df5.iloc[-1]
-                    prev = df5.iloc[-2]
-
-                    current_price = float(latest['close'])
-                    macro_1h_trend = "BULLISH" if current_price >= ema50_1h else "BEARISH"
-                    vol_spike = float(latest['volume']) >= (float(latest['vol_ma20']) * st.session_state.get('vol_multiplier', 1.3))
-
-                    return {
-                        "current_price": current_price,
-                        "volume_24h": float(df5['volume'].sum()),
-                        "rsi": float(latest['rsi']) if not pd.isna(latest['rsi']) else 50.0,
-                        "prev_rsi": float(prev['rsi']) if not pd.isna(prev['rsi']) else 50.0,
-                        "macd": float(latest['macd']) if not pd.isna(latest['macd']) else 0.0,
-                        "macd_signal": float(latest['macd_signal']) if not pd.isna(latest['macd_signal']) else 0.0,
-                        "prev_macd": float(prev['macd']) if not pd.isna(prev['macd']) else 0.0,
-                        "prev_macd_signal": float(prev['macd_signal']) if not pd.isna(prev['macd_signal']) else 0.0,
-                        "bb_lower": float(latest['bb_lower']) if not pd.isna(latest['bb_lower']) else current_price,
-                        "bb_upper": float(latest['bb_upper']) if not pd.isna(latest['bb_upper']) else current_price,
-                        "volume_spike": vol_spike,
-                        "macro_1h_trend": macro_1h_trend,
-                        "ema50_1h": float(ema50_1h)
-                    }
+        r = requests.get("https://api.binance.com/api/v3/ticker/price", timeout=5.0)
+        if r.status_code == 200:
+            return {item['symbol']: float(item['price']) for item in r.json()}
     except Exception:
         pass
+    return {}
 
+# 2. Caches the heavy historical data for 5 minutes (prevents rate limits)
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_historical_candles(symbol):
+    try:
+        url_5m = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=5m&limit=50"
+        r_5m = requests.get(url_5m, timeout=5.0)
+
+        url_1h = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=50"
+        r_1h = requests.get(url_1h, timeout=5.0)
+
+        if r_5m.status_code == 200 and r_1h.status_code == 200:
+            candles_5m = r_5m.json()
+            candles_1h = r_1h.json()
+
+            if len(candles_5m) >= 20 and len(candles_1h) >= 20:
+                columns = ['time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_vol', 'trades', 'tb', 'tq', 'ignore']
+                
+                df5 = pd.DataFrame(candles_5m, columns=columns)
+                df5['close'] = df5['close'].astype(float)
+                df5['volume'] = df5['volume'].astype(float)
+
+                df1h = pd.DataFrame(candles_1h, columns=columns)
+                df1h['close'] = df1h['close'].astype(float)
+                
+                return {"df5": df5, "df1h": df1h}
+    except Exception:
+        pass
     return None
 
-def analyze_market_signal(symbol, data):
-    if not data:
-        return 0.0, "HOLD", "Data Unavailable"
+# 3. Stitch live price to the cached history and calculate mathematically accurate indicators
+def calculate_live_indicators(history, live_price, vol_multiplier):
+    df5 = history["df5"].copy()
+    df1h = history["df1h"].copy()
 
+    # Update the last candle close price with the real-time live ticker
+    df5.at[df5.index[-1], 'close'] = live_price
+    df1h.at[df1h.index[-1], 'close'] = live_price
+
+    span_val = min(50, len(df1h))
+    ema50_1h = df1h['close'].ewm(span=span_val, adjust=False).mean().iloc[-1]
+
+    delta = df5['close'].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(window=14).mean()
+    avg_loss = loss.rolling(window=14).mean()
+    rs = avg_gain / (avg_loss + 1e-10)
+    df5['rsi'] = 100 - (100 / (1 + rs))
+
+    ema12 = df5['close'].ewm(span=12, adjust=False).mean()
+    ema26 = df5['close'].ewm(span=26, adjust=False).mean()
+    df5['macd'] = ema12 - ema26
+    df5['macd_signal'] = df5['macd'].ewm(span=9, adjust=False).mean()
+
+    sma20 = df5['close'].rolling(window=20).mean()
+    std20 = df5['close'].rolling(window=20).std()
+    df5['bb_upper'] = sma20 + (2 * std20)
+    df5['bb_lower'] = sma20 - (2 * std20)
+    df5['vol_ma20'] = df5['volume'].rolling(window=20).mean()
+
+    latest = df5.iloc[-1]
+    prev = df5.iloc[-2]
+
+    macro_1h_trend = "BULLISH" if live_price >= ema50_1h else "BEARISH"
+    vol_spike = float(latest['volume']) >= (float(latest['vol_ma20']) * vol_multiplier)
+
+    return {
+        "current_price": live_price,
+        "rsi": float(latest['rsi']) if not pd.isna(latest['rsi']) else 50.0,
+        "prev_rsi": float(prev['rsi']) if not pd.isna(prev['rsi']) else 50.0,
+        "macd": float(latest['macd']) if not pd.isna(latest['macd']) else 0.0,
+        "macd_signal": float(latest['macd_signal']) if not pd.isna(latest['macd_signal']) else 0.0,
+        "prev_macd": float(prev['macd']) if not pd.isna(prev['macd']) else 0.0,
+        "prev_macd_signal": float(prev['macd_signal']) if not pd.isna(prev['macd_signal']) else 0.0,
+        "bb_lower": float(latest['bb_lower']) if not pd.isna(latest['bb_lower']) else live_price,
+        "bb_upper": float(latest['bb_upper']) if not pd.isna(latest['bb_upper']) else live_price,
+        "volume_spike": vol_spike,
+        "macro_1h_trend": macro_1h_trend
+    }
+
+def analyze_market_signal(symbol, data):
     price = data['current_price']
     long_qty = st.session_state.holdings.get(symbol, 0.0)
     short_qty = st.session_state.short_holdings.get(symbol, 0.0)
     entry_price = st.session_state.entry_prices.get(symbol, 0.0)
 
+    # 100% Real-Time SL/TP Evaluation based on Live Price
     if long_qty > 0 and entry_price > 0:
         pnl_pct = ((price - entry_price) / entry_price) * 100.0
         if pnl_pct >= st.session_state.take_profit_pct: return price, "SELL", f"Long TP (+{pnl_pct:.2f}%)"
@@ -375,112 +315,119 @@ def analyze_market_signal(symbol, data):
 
 def render_engine():
     st.metric("Total Cash Balance", f"${st.session_state.balance:,.2f} USDT")
-    
     current_time_str = datetime.now().strftime("%H:%M:%S")
-    st.caption(f"🔄 Last Scan: **{current_time_str}** | Total Active Coins Evaluated: **{len(st.session_state.selected_symbols)}**")
 
     if not st.session_state.selected_symbols:
         st.info("Select active trading coins in the sidebar.")
         return
 
+    # FETCH 1: Instantly get ALL live prices across the market
+    live_prices = fetch_all_live_prices()
+
+    # FETCH 2: Maintain cached historical candle logic silently in background
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        ta_data_list = list(executor.map(fetch_ta_data_cached, st.session_state.selected_symbols))
+        cached_histories = list(executor.map(fetch_historical_candles, st.session_state.selected_symbols))
 
     top_10_summary = []
     active_positions_summary = []
     executed_any_trade = False
 
-    for symbol, ta_data in zip(st.session_state.selected_symbols, ta_data_list):
-        if ta_data is not None:
-            st.session_state.last_valid_ta[symbol] = ta_data
-        else:
-            ta_data = st.session_state.last_valid_ta.get(symbol, None)
-
-        if ta_data is None:
+    for symbol, history in zip(st.session_state.selected_symbols, cached_histories):
+        live_price = live_prices.get(symbol, 0.0)
+        
+        if history is None or live_price == 0.0:
             continue
 
+        # Stitch and analyze signals instantly using the live price
+        ta_data = calculate_live_indicators(history, live_price, st.session_state.vol_multiplier)
         current_price, signal, reason = analyze_market_signal(symbol, ta_data)
         
-        if current_price > 0:
-            long_qty = st.session_state.holdings.get(symbol, 0.0)
-            short_qty = st.session_state.short_holdings.get(symbol, 0.0)
-            entry_price = st.session_state.entry_prices.get(symbol, 0.0)
+        long_qty = st.session_state.holdings.get(symbol, 0.0)
+        short_qty = st.session_state.short_holdings.get(symbol, 0.0)
+        entry_price = st.session_state.entry_prices.get(symbol, 0.0)
 
-            position_type = "NONE"
-            pl_str = "0.00%"
+        position_type = "NONE"
+        pl_str = "0.00%"
+        raw_pl = 0.0
 
-            if long_qty > 0 and entry_price > 0:
-                position_type = "LONG"
-                pl_val = ((current_price - entry_price) / entry_price) * 100
-                pl_str = f"{pl_val:+.2f}%"
-            elif short_qty > 0 and entry_price > 0:
-                position_type = "SHORT"
-                pl_val = ((entry_price - current_price) / entry_price) * 100
-                pl_str = f"{pl_val:+.2f}%"
+        if long_qty > 0 and entry_price > 0:
+            position_type = "LONG"
+            raw_pl = ((current_price - entry_price) / entry_price) * 100
+            pl_str = f"{raw_pl:+.2f}%"
+        elif short_qty > 0 and entry_price > 0:
+            position_type = "SHORT"
+            raw_pl = ((entry_price - current_price) / entry_price) * 100
+            pl_str = f"{raw_pl:+.2f}%"
 
-            if long_qty > 0 or short_qty > 0:
-                active_positions_summary.append({
-                    "Asset": symbol,
-                    "Type": position_type,
-                    "Live Price": f"${current_price:,.4f}" if current_price < 1 else f"${current_price:,.2f}",
-                    "Entry Price": f"${entry_price:,.4f}" if entry_price < 1 else f"${entry_price:,.2f}",
-                    "Current P/L": pl_str,
-                    "Signal": signal
-                })
+        if long_qty > 0 or short_qty > 0:
+            active_positions_summary.append({
+                "Asset": symbol,
+                "Type": position_type,
+                "Live Price": f"${current_price:,.4f}" if current_price < 1 else f"${current_price:,.2f}",
+                "Entry Price": f"${entry_price:,.4f}" if entry_price < 1 else f"${entry_price:,.2f}",
+                "Current P/L": pl_str,
+                "Signal": signal,
+                "raw_pl": raw_pl
+            })
 
-            if symbol in TOP_10_HISTORICAL_SYMBOLS:
-                top_10_summary.append({
-                    "raw_price": current_price,
-                    "Asset": symbol,
-                    "Price": f"${current_price:,.4f}" if current_price < 1 else f"${current_price:,.2f}",
-                    "Position": position_type if position_type != "NONE" else "-",
-                    "Current P/L": pl_str if position_type != "NONE" else "-",
-                    "Signal": signal,
-                    "Reason": reason
-                })
+        if symbol in TOP_10_HISTORICAL_SYMBOLS:
+            top_10_summary.append({
+                "Asset": symbol,
+                "Price": f"${current_price:,.4f}" if current_price < 1 else f"${current_price:,.2f}",
+                "Position": position_type if position_type != "NONE" else "-",
+                "Current P/L": pl_str if position_type != "NONE" else "-",
+                "Signal": signal,
+                "Reason": reason
+            })
 
-            trade_amt = st.session_state.trade_amount_usdt
-            if st.session_state.bot_running:
-                if signal == "BUY" and st.session_state.balance >= trade_amt:
-                    coins_bought = trade_amt / current_price
-                    st.session_state.balance -= trade_amt
-                    st.session_state.holdings[symbol] = coins_bought
-                    st.session_state.entry_prices[symbol] = current_price
-                    st.session_state.trade_history.append({'Time': current_time_str, 'Asset': symbol, 'Type': 'BUY (LONG)', 'Price': f"${current_price:,.2f}", 'Value': f"${trade_amt:.2f}", 'Note': reason})
-                    executed_any_trade = True
+        trade_amt = st.session_state.trade_amount_usdt
+        if st.session_state.bot_running:
+            if signal == "BUY" and st.session_state.balance >= trade_amt:
+                coins_bought = trade_amt / current_price
+                st.session_state.balance -= trade_amt
+                st.session_state.holdings[symbol] = coins_bought
+                st.session_state.entry_prices[symbol] = current_price
+                st.session_state.trade_history.append({'Time': current_time_str, 'Asset': symbol, 'Type': 'BUY (LONG)', 'Price': f"${current_price:,.2f}", 'Value': f"${trade_amt:.2f}", 'Note': reason})
+                executed_any_trade = True
 
-                elif signal == "SELL" and long_qty > 0:
-                    usdt_received = long_qty * current_price
-                    net_pnl = usdt_received - trade_amt
-                    st.session_state.balance += usdt_received
-                    st.session_state.holdings[symbol] = 0.0
-                    st.session_state.entry_prices[symbol] = 0.0
-                    st.session_state.trade_history.append({'Time': current_time_str, 'Asset': symbol, 'Type': 'SELL (CLOSE LONG)', 'Price': f"${current_price:,.2f}", 'Value': f"${usdt_received:.2f}", 'Note': f"{reason} | Net: ${net_pnl:+.2f}"})
-                    executed_any_trade = True
+            elif signal == "SELL" and long_qty > 0:
+                usdt_received = long_qty * current_price
+                net_pnl = usdt_received - trade_amt
+                st.session_state.balance += usdt_received
+                st.session_state.holdings[symbol] = 0.0
+                st.session_state.entry_prices[symbol] = 0.0
+                st.session_state.trade_history.append({'Time': current_time_str, 'Asset': symbol, 'Type': 'SELL (CLOSE LONG)', 'Price': f"${current_price:,.2f}", 'Value': f"${usdt_received:.2f}", 'Note': f"{reason} | Net: ${net_pnl:+.2f}"})
+                executed_any_trade = True
 
-                elif signal == "SHORT" and st.session_state.balance >= trade_amt:
-                    coins_shorted = trade_amt / current_price
-                    st.session_state.balance -= trade_amt
-                    st.session_state.short_holdings[symbol] = coins_shorted
-                    st.session_state.entry_prices[symbol] = current_price
-                    st.session_state.trade_history.append({'Time': current_time_str, 'Asset': symbol, 'Type': 'SHORT (OPEN)', 'Price': f"${current_price:,.2f}", 'Value': f"${trade_amt:.2f}", 'Note': reason})
-                    executed_any_trade = True
+            elif signal == "SHORT" and st.session_state.balance >= trade_amt:
+                coins_shorted = trade_amt / current_price
+                st.session_state.balance -= trade_amt
+                st.session_state.short_holdings[symbol] = coins_shorted
+                st.session_state.entry_prices[symbol] = current_price
+                st.session_state.trade_history.append({'Time': current_time_str, 'Asset': symbol, 'Type': 'SHORT (OPEN)', 'Price': f"${current_price:,.2f}", 'Value': f"${trade_amt:.2f}", 'Note': reason})
+                executed_any_trade = True
 
-                elif signal == "COVER" and short_qty > 0:
-                    cost_to_buy_back = short_qty * current_price
-                    net_pnl = trade_amt - cost_to_buy_back
-                    st.session_state.balance += (trade_amt + net_pnl)
-                    st.session_state.short_holdings[symbol] = 0.0
-                    st.session_state.entry_prices[symbol] = 0.0
-                    st.session_state.trade_history.append({'Time': current_time_str, 'Asset': symbol, 'Type': 'COVER (CLOSE SHORT)', 'Price': f"${current_price:,.2f}", 'Value': f"${(trade_amt + net_pnl):.2f}", 'Note': f"{reason} | Net: ${net_pnl:+.2f}"})
-                    executed_any_trade = True
+            elif signal == "COVER" and short_qty > 0:
+                cost_to_buy_back = short_qty * current_price
+                net_pnl = trade_amt - cost_to_buy_back
+                st.session_state.balance += (trade_amt + net_pnl)
+                st.session_state.short_holdings[symbol] = 0.0
+                st.session_state.entry_prices[symbol] = 0.0
+                st.session_state.trade_history.append({'Time': current_time_str, 'Asset': symbol, 'Type': 'COVER (CLOSE SHORT)', 'Price': f"${current_price:,.2f}", 'Value': f"${(trade_amt + net_pnl):.2f}", 'Note': f"{reason} | Net: ${net_pnl:+.2f}"})
+                executed_any_trade = True
 
     if executed_any_trade:
         save_portfolio()
 
     st.subheader("💼 Active Open Positions")
     if active_positions_summary:
-        st.dataframe(pd.DataFrame(active_positions_summary), use_container_width=True)
+        if sort_order == "Current P/L":
+            active_positions_summary.sort(key=lambda x: x['raw_pl'], reverse=True)
+        else:
+            active_positions_summary.sort(key=lambda x: x['Asset'])
+            
+        display_positions = pd.DataFrame(active_positions_summary).drop(columns=['raw_pl'])
+        st.dataframe(display_positions, use_container_width=True)
     else:
         st.info("You currently have no open trades.")
 
@@ -488,17 +435,7 @@ def render_engine():
 
     st.subheader("📊 Top 10 Most Traded Coins (Live Overview)")
     if top_10_summary:
-        if sort_order == "Price (High to Low)":
-            top_10_summary.sort(key=lambda x: x['raw_price'], reverse=True)
-        elif sort_order == "Price (Low to High)":
-            top_10_summary.sort(key=lambda x: x['raw_price'], reverse=False)
-        elif sort_order == "Alphabetical":
-            top_10_summary.sort(key=lambda x: x['Asset'])
-
-        display_df = pd.DataFrame(top_10_summary).drop(columns=['raw_price'])
-        st.dataframe(display_df, use_container_width=True)
-    else:
-        st.warning("Fetching candle data for Top 10 coins...")
+        st.dataframe(pd.DataFrame(top_10_summary), use_container_width=True)
 
     st.subheader("📋 Global Multi-Asset Historical Trade Log")
     if len(st.session_state.trade_history) > 0:
