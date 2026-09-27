@@ -3,6 +3,9 @@ import pandas as pd
 import requests
 import json
 import os
+import threading
+import websocket
+import time
 import concurrent.futures
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
@@ -25,10 +28,10 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Auto-refresh UI every 4 seconds to balance live updates with rate limits
-st_autorefresh(interval=4000, limit=None, key="bot_ticker_refresh")
+# Auto-refresh UI every 2 seconds (Fast UI updates driven by WebSocket state)
+st_autorefresh(interval=2000, limit=None, key="bot_ticker_refresh")
 
-st.title("🤖 24/7 Crypto AI Bot (Hybrid Live-Tick Engine)")
+st.title("🤖 24/7 Crypto AI Bot (WebSocket Live Engine)")
 
 PORTFOLIO_FILE = "portfolio.json"
 
@@ -94,6 +97,78 @@ if 'entry_prices' not in st.session_state: st.session_state.entry_prices = saved
 if 'trade_history' not in st.session_state: st.session_state.trade_history = saved_data.get("trade_history", [])
 if 'bot_running' not in st.session_state: st.session_state.bot_running = True
 
+# --- THREAD-SAFE WEBSOCKET LIVE TICKER ENGINE ---
+if 'ws_price_store' not in st.session_state:
+    st.session_state.ws_price_store = {}
+
+# Global memory buffer persistent across Streamlit re-runs
+@st.cache_resource
+def get_global_price_buffer():
+    return {}
+
+price_buffer = get_global_price_buffer()
+
+def start_websocket_listener():
+    """Runs a persistent WebSocket client in a background thread streaming live Binance prices."""
+    def on_message(ws, message):
+        try:
+            data = json.loads(message)
+            if isinstance(data, list):
+                for tick in data:
+                    sym = tick.get("s")
+                    price = tick.get("c")
+                    if sym and price:
+                        price_buffer[sym] = float(price)
+        except Exception:
+            pass
+
+    def on_error(ws, error):
+        pass
+
+    def on_close(ws, close_status_code, close_msg):
+        time.sleep(2)
+        run_ws()
+
+    def run_ws():
+        # Streams live tickers for all coins directly from Binance WebSocket Stream
+        stream_url = "wss://stream.binance.com:9443/ws/!ticker@arr"
+        ws = websocket.WebSocketApp(
+            stream_url,
+            on_message=on_message,
+            on_error=on_error,
+            on_close=on_close
+        )
+        ws.run_forever()
+
+    ws_thread = threading.Thread(target=run_ws, daemon=True)
+    ws_thread.start()
+
+# Initialize WebSocket Thread once
+@st.cache_resource
+def init_websocket():
+    start_websocket_listener()
+    return True
+
+init_websocket()
+
+def fetch_all_live_prices():
+    # Sync memory buffer to session state
+    if price_buffer:
+        st.session_state.ws_price_store.update(price_buffer)
+        return st.session_state.ws_price_store
+    
+    # HTTP Failsafe in case WebSocket is warming up
+    try:
+        r = requests.get("https://api.binance.com/api/v3/ticker/price", timeout=2.0)
+        if r.status_code == 200:
+            http_prices = {item['symbol']: float(item['price']) for item in r.json()}
+            st.session_state.ws_price_store.update(http_prices)
+            return st.session_state.ws_price_store
+    except Exception:
+        pass
+
+    return st.session_state.ws_price_store
+
 # --- SIDEBAR CONFIGURATION ---
 st.sidebar.header("⚙️ Bot Settings")
 sb_col1, sb_col2 = st.sidebar.columns(2)
@@ -149,6 +224,7 @@ if st.sidebar.button("🔄 Reset Portfolio ($1,000 USDT)"):
     st.session_state.entry_prices = {}
     st.session_state.trade_history = []
     st.session_state.selected_symbols = ALL_TRADING_SYMBOLS
+    st.session_state.ws_price_store = {}
     st.rerun()
 
 save_portfolio()
@@ -170,68 +246,18 @@ with col_stop:
         st.toast("Bot paused.", icon="🔴")
 
 if st.session_state.bot_running:
-    st.success(f"🟢 STATUS: BOT ACTIVE (Trading {len(st.session_state.selected_symbols)} Coins via Batch Live Engine)")
+    st.success(f"🟢 STATUS: BOT ACTIVE (Trading {len(st.session_state.selected_symbols)} Coins via Streaming WebSocket Engine)")
 else:
     st.warning("🔴 STATUS: BOT PAUSED")
-
-# --- ROBUST LIVE PRICE FETCH WITH MULTIPLE FALLBACKS ---
-def fetch_all_live_prices():
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-
-    # 1. Primary Attempt: Binance Single Batch Endpoint
-    try:
-        symbols_param = json.dumps(st.session_state.selected_symbols).replace(" ", "")
-        url = f"https://api.binance.com/api/v3/ticker/price?symbols={symbols_param}"
-        r = requests.get(url, headers=headers, timeout=3.0)
-        if r.status_code == 200:
-            data = {item['symbol']: float(item['price']) for item in r.json()}
-            if data:
-                return data
-    except Exception:
-        pass
-
-    # 2. Secondary Fallback: Binance Full Public Ticker Endpoint
-    try:
-        r = requests.get("https://api.binance.com/api/v3/ticker/price", headers=headers, timeout=3.0)
-        if r.status_code == 200:
-            data = {item['symbol']: float(item['price']) for item in r.json()}
-            if data:
-                return data
-    except Exception:
-        pass
-
-    # 3. Tertiary Fallback: CoinGecko Public API (Maps top coins if Binance is cloud/geo-blocked)
-    try:
-        cg_url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana,ripple,binancecoin,dogecoin,cardano,avalanche-2,shiba-inu,chainlink&vs_currencies=usd"
-        r = requests.get(cg_url, headers=headers, timeout=3.0)
-        if r.status_code == 200:
-            cg_data = r.json()
-            mapping = {
-                "BTCUSDT": cg_data.get("bitcoin", {}).get("usd"),
-                "ETHUSDT": cg_data.get("ethereum", {}).get("usd"),
-                "SOLUSDT": cg_data.get("solana", {}).get("usd"),
-                "XRPUSDT": cg_data.get("ripple", {}).get("usd"),
-                "BNBUSDT": cg_data.get("binancecoin", {}).get("usd"),
-                "DOGEUSDT": cg_data.get("dogecoin", {}).get("usd"),
-                "ADAUSDT": cg_data.get("cardano", {}).get("usd"),
-                "AVAXUSDT": cg_data.get("avalanche-2", {}).get("usd"),
-                "SHIBUSDT": cg_data.get("shiba-inu", {}).get("usd"),
-                "LINKUSDT": cg_data.get("chainlink", {}).get("usd")
-            }
-            return {k: v for k, v in mapping.items() if v is not None}
-    except Exception:
-        pass
-
-    return {}
 
 def fetch_historical_candles_direct(symbol):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     try:
         url_5m = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=5m&limit=50"
-        r_5m = requests.get(url_5m, headers=headers, timeout=2.5)
+        r_5m = requests.get(url_5m, headers=headers, timeout=2.0)
 
         url_1h = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=50"
-        r_1h = requests.get(url_1h, headers=headers, timeout=2.5)
+        r_1h = requests.get(url_1h, headers=headers, timeout=2.0)
 
         if r_5m.status_code == 200 and r_1h.status_code == 200:
             candles_5m = r_5m.json()
@@ -368,11 +394,11 @@ def render_engine():
         pl_str = "-"
         raw_pl = 0.0
 
-        if long_qty > 0 and entry_price > 0:
+        if long_qty > 0 and entry_price > 0 and current_price > 0:
             position_type = "LONG"
             raw_pl = ((current_price - entry_price) / entry_price) * 100
             pl_str = f"{raw_pl:+.2f}%"
-        elif short_qty > 0 and entry_price > 0:
+        elif short_qty > 0 and entry_price > 0 and current_price > 0:
             position_type = "SHORT"
             raw_pl = ((entry_price - current_price) / entry_price) * 100
             pl_str = f"{raw_pl:+.2f}%"
@@ -396,7 +422,6 @@ def render_engine():
 
     # 2. RUN INDICATOR ANALYSIS & TRADING LOGIC
     active_positions_summary = []
-    
     symbols_to_process = st.session_state.selected_symbols[:15]
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
@@ -430,7 +455,7 @@ def render_engine():
                 elif pnl_pct <= -st.session_state.stop_loss_pct: signal, reason = "COVER", f"Short SL ({pnl_pct:.2f}%)"
                 else: reason = f"Holding Short ({pnl_pct:+.2f}%)"
             else:
-                reason = "⚡ Monitoring Price Feed..."
+                reason = "⚡ Stream Active..."
 
         position_type = "NONE"
         pl_str = "0.00%"
