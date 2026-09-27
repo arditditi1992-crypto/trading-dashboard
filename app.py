@@ -174,35 +174,64 @@ if st.session_state.bot_running:
 else:
     st.warning("🔴 STATUS: BOT PAUSED")
 
-# --- FAST BATCH TICKER FETCH ---
+# --- ROBUST LIVE PRICE FETCH WITH MULTIPLE FALLBACKS ---
 def fetch_all_live_prices():
-    """Fetches ALL symbol prices in ONE single batch API request."""
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+
+    # 1. Primary Attempt: Binance Single Batch Endpoint
     try:
         symbols_param = json.dumps(st.session_state.selected_symbols).replace(" ", "")
         url = f"https://api.binance.com/api/v3/ticker/price?symbols={symbols_param}"
-        r = requests.get(url, timeout=2.5)
+        r = requests.get(url, headers=headers, timeout=3.0)
         if r.status_code == 200:
-            return {item['symbol']: float(item['price']) for item in r.json()}
+            data = {item['symbol']: float(item['price']) for item in r.json()}
+            if data:
+                return data
     except Exception:
         pass
 
+    # 2. Secondary Fallback: Binance Full Public Ticker Endpoint
     try:
-        r = requests.get("https://api.binance.com/api/v3/ticker/price", timeout=2.5)
+        r = requests.get("https://api.binance.com/api/v3/ticker/price", headers=headers, timeout=3.0)
         if r.status_code == 200:
-            return {item['symbol']: float(item['price']) for item in r.json()}
+            data = {item['symbol']: float(item['price']) for item in r.json()}
+            if data:
+                return data
+    except Exception:
+        pass
+
+    # 3. Tertiary Fallback: CoinGecko Public API (Maps top coins if Binance is cloud/geo-blocked)
+    try:
+        cg_url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana,ripple,binancecoin,dogecoin,cardano,avalanche-2,shiba-inu,chainlink&vs_currencies=usd"
+        r = requests.get(cg_url, headers=headers, timeout=3.0)
+        if r.status_code == 200:
+            cg_data = r.json()
+            mapping = {
+                "BTCUSDT": cg_data.get("bitcoin", {}).get("usd"),
+                "ETHUSDT": cg_data.get("ethereum", {}).get("usd"),
+                "SOLUSDT": cg_data.get("solana", {}).get("usd"),
+                "XRPUSDT": cg_data.get("ripple", {}).get("usd"),
+                "BNBUSDT": cg_data.get("binancecoin", {}).get("usd"),
+                "DOGEUSDT": cg_data.get("dogecoin", {}).get("usd"),
+                "ADAUSDT": cg_data.get("cardano", {}).get("usd"),
+                "AVAXUSDT": cg_data.get("avalanche-2", {}).get("usd"),
+                "SHIBUSDT": cg_data.get("shiba-inu", {}).get("usd"),
+                "LINKUSDT": cg_data.get("chainlink", {}).get("usd")
+            }
+            return {k: v for k, v in mapping.items() if v is not None}
     except Exception:
         pass
 
     return {}
 
-# Un-cached fetcher with strict fallbacks so failed requests retry immediately on next tick
 def fetch_historical_candles_direct(symbol):
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     try:
         url_5m = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=5m&limit=50"
-        r_5m = requests.get(url_5m, timeout=2.0)
+        r_5m = requests.get(url_5m, headers=headers, timeout=2.5)
 
         url_1h = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=50"
-        r_1h = requests.get(url_1h, timeout=2.0)
+        r_1h = requests.get(url_1h, headers=headers, timeout=2.5)
 
         if r_5m.status_code == 200 and r_1h.status_code == 200:
             candles_5m = r_5m.json()
@@ -368,7 +397,6 @@ def render_engine():
     # 2. RUN INDICATOR ANALYSIS & TRADING LOGIC
     active_positions_summary = []
     
-    # Process only selected symbols (throttled pool size)
     symbols_to_process = st.session_state.selected_symbols[:15]
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
@@ -381,7 +409,6 @@ def render_engine():
         if live_price == 0.0:
             continue
 
-        # Active Position TP/SL Check Failsafe (Runs even if history sync failed)
         long_qty = st.session_state.holdings.get(symbol, 0.0)
         short_qty = st.session_state.short_holdings.get(symbol, 0.0)
         entry_price = st.session_state.entry_prices.get(symbol, 0.0)
@@ -392,7 +419,6 @@ def render_engine():
         else:
             current_price = live_price
             signal = "HOLD"
-            # Active Position Exit Monitoring Backup
             if long_qty > 0 and entry_price > 0:
                 pnl_pct = ((current_price - entry_price) / entry_price) * 100.0
                 if pnl_pct >= st.session_state.take_profit_pct: signal, reason = "SELL", f"Long TP (+{pnl_pct:.2f}%)"
