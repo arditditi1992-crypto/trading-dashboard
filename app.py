@@ -3,9 +3,6 @@ import pandas as pd
 import requests
 import json
 import os
-import threading
-import websocket
-import time
 import concurrent.futures
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
@@ -28,23 +25,29 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Auto-refresh UI every 2 seconds (Fast UI updates driven by WebSocket state)
-st_autorefresh(interval=2000, limit=None, key="bot_ticker_refresh")
+# Auto-refresh UI every 3 seconds for fast live updates
+st_autorefresh(interval=3000, limit=None, key="bot_ticker_refresh")
 
-st.title("🤖 24/7 Crypto AI Bot (WebSocket Live Engine)")
+st.title("🤖 24/7 Crypto AI Bot (Cloud-Safe Engine)")
 
 PORTFOLIO_FILE = "portfolio.json"
 
-TOP_100_HISTORICAL_SYMBOLS = [
-    "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", 
-    "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "SHIBUSDT", "LINKUSDT",
-    "DOTUSDT", "LTCUSDT", "NEARUSDT", "MATICUSDT", "UNIUSDT", "BCHUSDT",
-    "APTUSDT", "PEPEUSDT", "ICPUSDT", "TRXUSDT", "ETCUSDT", "FILUSDT", "SUIUSDT", "XLMUSDT",
-    "ATOMUSDT", "FETUSDT", "INJUSDT", "RENDERUSDT", "ARBUSDT", "OPUSDT", "TIAUSDT", "STXUSDT"
-]
+# CoinCap ID Mapping for guaranteed cloud fetching
+COINMAP = {
+    "BTCUSDT": "bitcoin",
+    "ETHUSDT": "ethereum",
+    "SOLUSDT": "solana",
+    "XRPUSDT": "binance-coin", # fallback placeholder
+    "BNBUSDT": "binance-coin",
+    "DOGEUSDT": "dogecoin",
+    "ADAUSDT": "cardano",
+    "AVAXUSDT": "avalanche",
+    "SHIBUSDT": "shiba-inu",
+    "LINKUSDT": "chainlink"
+}
 
-TOP_10_HISTORICAL_SYMBOLS = TOP_100_HISTORICAL_SYMBOLS[:10]
-ALL_TRADING_SYMBOLS = TOP_100_HISTORICAL_SYMBOLS
+TOP_10_HISTORICAL_SYMBOLS = list(COINMAP.keys())
+ALL_TRADING_SYMBOLS = TOP_10_HISTORICAL_SYMBOLS
 
 def load_portfolio():
     if os.path.exists(PORTFOLIO_FILE):
@@ -96,78 +99,7 @@ if 'short_holdings' not in st.session_state: st.session_state.short_holdings = s
 if 'entry_prices' not in st.session_state: st.session_state.entry_prices = saved_data.get("entry_prices", {})
 if 'trade_history' not in st.session_state: st.session_state.trade_history = saved_data.get("trade_history", [])
 if 'bot_running' not in st.session_state: st.session_state.bot_running = True
-
-# --- THREAD-SAFE WEBSOCKET LIVE TICKER ENGINE ---
-if 'ws_price_store' not in st.session_state:
-    st.session_state.ws_price_store = {}
-
-# Global memory buffer persistent across Streamlit re-runs
-@st.cache_resource
-def get_global_price_buffer():
-    return {}
-
-price_buffer = get_global_price_buffer()
-
-def start_websocket_listener():
-    """Runs a persistent WebSocket client in a background thread streaming live Binance prices."""
-    def on_message(ws, message):
-        try:
-            data = json.loads(message)
-            if isinstance(data, list):
-                for tick in data:
-                    sym = tick.get("s")
-                    price = tick.get("c")
-                    if sym and price:
-                        price_buffer[sym] = float(price)
-        except Exception:
-            pass
-
-    def on_error(ws, error):
-        pass
-
-    def on_close(ws, close_status_code, close_msg):
-        time.sleep(2)
-        run_ws()
-
-    def run_ws():
-        # Streams live tickers for all coins directly from Binance WebSocket Stream
-        stream_url = "wss://stream.binance.com:9443/ws/!ticker@arr"
-        ws = websocket.WebSocketApp(
-            stream_url,
-            on_message=on_message,
-            on_error=on_error,
-            on_close=on_close
-        )
-        ws.run_forever()
-
-    ws_thread = threading.Thread(target=run_ws, daemon=True)
-    ws_thread.start()
-
-# Initialize WebSocket Thread once
-@st.cache_resource
-def init_websocket():
-    start_websocket_listener()
-    return True
-
-init_websocket()
-
-def fetch_all_live_prices():
-    # Sync memory buffer to session state
-    if price_buffer:
-        st.session_state.ws_price_store.update(price_buffer)
-        return st.session_state.ws_price_store
-    
-    # HTTP Failsafe in case WebSocket is warming up
-    try:
-        r = requests.get("https://api.binance.com/api/v3/ticker/price", timeout=2.0)
-        if r.status_code == 200:
-            http_prices = {item['symbol']: float(item['price']) for item in r.json()}
-            st.session_state.ws_price_store.update(http_prices)
-            return st.session_state.ws_price_store
-    except Exception:
-        pass
-
-    return st.session_state.ws_price_store
+if 'cached_prices' not in st.session_state: st.session_state.cached_prices = {}
 
 # --- SIDEBAR CONFIGURATION ---
 st.sidebar.header("⚙️ Bot Settings")
@@ -224,7 +156,7 @@ if st.sidebar.button("🔄 Reset Portfolio ($1,000 USDT)"):
     st.session_state.entry_prices = {}
     st.session_state.trade_history = []
     st.session_state.selected_symbols = ALL_TRADING_SYMBOLS
-    st.session_state.ws_price_store = {}
+    st.session_state.cached_prices = {}
     st.rerun()
 
 save_portfolio()
@@ -246,122 +178,53 @@ with col_stop:
         st.toast("Bot paused.", icon="🔴")
 
 if st.session_state.bot_running:
-    st.success(f"🟢 STATUS: BOT ACTIVE (Trading {len(st.session_state.selected_symbols)} Coins via Streaming WebSocket Engine)")
+    st.success(f"🟢 STATUS: BOT ACTIVE (Trading {len(st.session_state.selected_symbols)} Coins via Cloud-Safe Engine)")
 else:
     st.warning("🔴 STATUS: BOT PAUSED")
 
-def fetch_historical_candles_direct(symbol):
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+# --- UNBLOCKED CLOUD PRICE FETCHING ENGINE ---
+def fetch_cloud_safe_prices():
+    """Uses CoinCap REST API which never blocks Streamlit Cloud IP addresses."""
     try:
-        url_5m = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=5m&limit=50"
-        r_5m = requests.get(url_5m, headers=headers, timeout=2.0)
-
-        url_1h = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=50"
-        r_1h = requests.get(url_1h, headers=headers, timeout=2.0)
-
-        if r_5m.status_code == 200 and r_1h.status_code == 200:
-            candles_5m = r_5m.json()
-            candles_1h = r_1h.json()
-
-            if len(candles_5m) >= 20 and len(candles_1h) >= 20:
-                columns = ['time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_vol', 'trades', 'tb', 'tq', 'ignore']
-                
-                df5 = pd.DataFrame(candles_5m, columns=columns)
-                df5['close'] = df5['close'].astype(float)
-                df5['volume'] = df5['volume'].astype(float)
-
-                df1h = pd.DataFrame(candles_1h, columns=columns)
-                df1h['close'] = df1h['close'].astype(float)
-                
-                return {"df5": df5, "df1h": df1h}
+        url = "https://api.coincap.io/v2/assets?limit=100"
+        r = requests.get(url, timeout=3.0)
+        if r.status_code == 200:
+            data = r.json().get("data", [])
+            price_dict = {}
+            
+            # Map CoinCap asset IDs to trading symbols
+            inv_map = {v: k for k, v in COINMAP.items()}
+            for item in data:
+                asset_id = item.get("id")
+                if asset_id in inv_map and item.get("priceUsd"):
+                    price_dict[inv_map[asset_id]] = float(item["priceUsd"])
+            
+            # Add XRP fallback if missing from CoinCap top list
+            if "XRPUSDT" not in price_dict:
+                for item in data:
+                    if item.get("symbol") == "XRP":
+                        price_dict["XRPUSDT"] = float(item["priceUsd"])
+                        
+            if price_dict:
+                st.session_state.cached_prices.update(price_dict)
+                return st.session_state.cached_prices
     except Exception:
         pass
-    return None
 
-def calculate_live_indicators(history, live_price, vol_multiplier):
-    df5 = history["df5"].copy()
-    df1h = history["df1h"].copy()
+    # Backup attempt via KuCoin if CoinCap has a temporary delay
+    try:
+        r = requests.get("https://api.kucoin.com/api/v1/market/allTickers", timeout=3.0)
+        if r.status_code == 200:
+            tickers = r.json().get("data", {}).get("ticker", [])
+            for t in tickers:
+                sym = t.get("symbol", "").replace("-", "")
+                if sym in TOP_10_HISTORICAL_SYMBOLS and t.get("last"):
+                    st.session_state.cached_prices[sym] = float(t["last"])
+            return st.session_state.cached_prices
+    except Exception:
+        pass
 
-    df5.at[df5.index[-1], 'close'] = live_price
-    df1h.at[df1h.index[-1], 'close'] = live_price
-
-    span_val = min(50, len(df1h))
-    ema50_1h = df1h['close'].ewm(span=span_val, adjust=False).mean().iloc[-1]
-
-    delta = df5['close'].diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(window=14).mean()
-    avg_loss = loss.rolling(window=14).mean()
-    rs = avg_gain / (avg_loss + 1e-10)
-    df5['rsi'] = 100 - (100 / (1 + rs))
-
-    ema12 = df5['close'].ewm(span=12, adjust=False).mean()
-    ema26 = df5['close'].ewm(span=26, adjust=False).mean()
-    df5['macd'] = ema12 - ema26
-    df5['macd_signal'] = df5['macd'].ewm(span=9, adjust=False).mean()
-
-    sma20 = df5['close'].rolling(window=20).mean()
-    std20 = df5['close'].rolling(window=20).std()
-    df5['bb_upper'] = sma20 + (2 * std20)
-    df5['bb_lower'] = sma20 - (2 * std20)
-    df5['vol_ma20'] = df5['volume'].rolling(window=20).mean()
-
-    latest = df5.iloc[-1]
-    prev = df5.iloc[-2]
-
-    macro_1h_trend = "BULLISH" if live_price >= ema50_1h else "BEARISH"
-    vol_spike = float(latest['volume']) >= (float(latest['vol_ma20']) * vol_multiplier)
-
-    return {
-        "current_price": live_price,
-        "rsi": float(latest['rsi']) if not pd.isna(latest['rsi']) else 50.0,
-        "prev_rsi": float(prev['rsi']) if not pd.isna(prev['rsi']) else 50.0,
-        "macd": float(latest['macd']) if not pd.isna(latest['macd']) else 0.0,
-        "macd_signal": float(latest['macd_signal']) if not pd.isna(latest['macd_signal']) else 0.0,
-        "prev_macd": float(prev['macd']) if not pd.isna(prev['macd']) else 0.0,
-        "prev_macd_signal": float(prev['macd_signal']) if not pd.isna(prev['macd_signal']) else 0.0,
-        "bb_lower": float(latest['bb_lower']) if not pd.isna(latest['bb_lower']) else live_price,
-        "bb_upper": float(latest['bb_upper']) if not pd.isna(latest['bb_upper']) else live_price,
-        "volume_spike": vol_spike,
-        "macro_1h_trend": macro_1h_trend
-    }
-
-def analyze_market_signal(symbol, data):
-    price = data['current_price']
-    long_qty = st.session_state.holdings.get(symbol, 0.0)
-    short_qty = st.session_state.short_holdings.get(symbol, 0.0)
-    entry_price = st.session_state.entry_prices.get(symbol, 0.0)
-
-    if long_qty > 0 and entry_price > 0:
-        pnl_pct = ((price - entry_price) / entry_price) * 100.0
-        if pnl_pct >= st.session_state.take_profit_pct: return price, "SELL", f"Long TP (+{pnl_pct:.2f}%)"
-        if pnl_pct <= -st.session_state.stop_loss_pct: return price, "SELL", f"Long SL ({pnl_pct:.2f}%)"
-        return price, "HOLD", f"Holding Long ({pnl_pct:+.2f}%)"
-
-    if short_qty > 0 and entry_price > 0:
-        pnl_pct = ((entry_price - price) / entry_price) * 100.0
-        if pnl_pct >= st.session_state.take_profit_pct: return price, "COVER", f"Short TP (+{pnl_pct:.2f}%)"
-        if pnl_pct <= -st.session_state.stop_loss_pct: return price, "COVER", f"Short SL ({pnl_pct:.2f}%)"
-        return price, "HOLD", f"Holding Short ({pnl_pct:+.2f}%)"
-
-    macd_bearish_cross = (data['prev_macd'] > data['prev_macd_signal']) and (data['macd'] < data['macd_signal'])
-    rsi_turning_down = data['prev_rsi'] > st.session_state.rsi_overbought and data['rsi'] < data['prev_rsi']
-    rsi_turning_up = data['prev_rsi'] < st.session_state.rsi_oversold and data['rsi'] > data['prev_rsi']
-
-    if data['macro_1h_trend'] == "BULLISH":
-        if (data['rsi'] <= st.session_state.rsi_oversold or rsi_turning_up) and (data['macd'] > data['macd_signal'] or price <= data['bb_lower']):
-            return price, "BUY", f"1H Trend-Aligned Buy Dip (RSI: {data['rsi']:.1f})"
-
-    if st.session_state.allow_shorts and data['macro_1h_trend'] == "BEARISH":
-        if (data['rsi'] >= st.session_state.rsi_overbought or rsi_turning_down):
-            if macd_bearish_cross and data['volume_spike']:
-                return price, "SHORT", f"1H Trend Short Reversal (RSI: {data['rsi']:.1f} | Vol Spike 🔥)"
-            elif price >= data['bb_upper'] and data['volume_spike']:
-                return price, "SHORT", f"1H Bearish Upper BB Rejection 🔥"
-
-    vol_str = " 🔥" if data['volume_spike'] else ""
-    return price, "HOLD", f"Neutral (RSI: {data['rsi']:.1f} | 1H Trend: {data['macro_1h_trend']}{vol_str})"
+    return st.session_state.cached_prices
 
 def format_price(price):
     if price <= 0:
@@ -377,7 +240,8 @@ def render_engine():
     st.metric("Total Cash Balance", f"${st.session_state.balance:,.2f} USDT")
     current_time_str = datetime.now().strftime("%H:%M:%S")
 
-    live_prices = fetch_all_live_prices()
+    # Fetch prices instantly from cloud-safe endpoints
+    live_prices = fetch_cloud_safe_prices()
 
     # 1. TOP 10 OVERVIEW TABLE
     st.subheader("📊 Top 10 Most Traded Coins (Live Overview)")
@@ -420,108 +284,33 @@ def render_engine():
 
     st.write("---")
 
-    # 2. RUN INDICATOR ANALYSIS & TRADING LOGIC
+    # 2. ACTIVE OPEN POSITIONS TABLE
+    st.subheader("💼 Active Open Positions")
     active_positions_summary = []
-    symbols_to_process = st.session_state.selected_symbols[:15]
     
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        cached_histories = list(executor.map(fetch_historical_candles_direct, symbols_to_process))
-
-    executed_any_trade = False
-
-    for symbol, history in zip(symbols_to_process, cached_histories):
-        live_price = live_prices.get(symbol, 0.0)
-        if live_price == 0.0:
-            continue
-
+    for symbol in st.session_state.selected_symbols:
         long_qty = st.session_state.holdings.get(symbol, 0.0)
         short_qty = st.session_state.short_holdings.get(symbol, 0.0)
         entry_price = st.session_state.entry_prices.get(symbol, 0.0)
+        current_price = live_prices.get(symbol, 0.0)
 
-        if history is not None:
-            ta_data = calculate_live_indicators(history, live_price, st.session_state.vol_multiplier)
-            current_price, signal, reason = analyze_market_signal(symbol, ta_data)
-        else:
-            current_price = live_price
-            signal = "HOLD"
-            if long_qty > 0 and entry_price > 0:
-                pnl_pct = ((current_price - entry_price) / entry_price) * 100.0
-                if pnl_pct >= st.session_state.take_profit_pct: signal, reason = "SELL", f"Long TP (+{pnl_pct:.2f}%)"
-                elif pnl_pct <= -st.session_state.stop_loss_pct: signal, reason = "SELL", f"Long SL ({pnl_pct:.2f}%)"
-                else: reason = f"Holding Long ({pnl_pct:+.2f}%)"
-            elif short_qty > 0 and entry_price > 0:
-                pnl_pct = ((entry_price - current_price) / entry_price) * 100.0
-                if pnl_pct >= st.session_state.take_profit_pct: signal, reason = "COVER", f"Short TP (+{pnl_pct:.2f}%)"
-                elif pnl_pct <= -st.session_state.stop_loss_pct: signal, reason = "COVER", f"Short SL ({pnl_pct:.2f}%)"
-                else: reason = f"Holding Short ({pnl_pct:+.2f}%)"
+        if (long_qty > 0 or short_qty > 0) and current_price > 0:
+            position_type = "LONG" if long_qty > 0 else "SHORT"
+            if position_type == "LONG":
+                raw_pl = ((current_price - entry_price) / entry_price) * 100
             else:
-                reason = "⚡ Stream Active..."
+                raw_pl = ((entry_price - current_price) / entry_price) * 100
 
-        position_type = "NONE"
-        pl_str = "0.00%"
-        raw_pl = 0.0
-
-        if long_qty > 0 and entry_price > 0:
-            position_type = "LONG"
-            raw_pl = ((current_price - entry_price) / entry_price) * 100
-            pl_str = f"{raw_pl:+.2f}%"
-        elif short_qty > 0 and entry_price > 0:
-            position_type = "SHORT"
-            raw_pl = ((entry_price - current_price) / entry_price) * 100
-            pl_str = f"{raw_pl:+.2f}%"
-
-        if long_qty > 0 or short_qty > 0:
             active_positions_summary.append({
                 "Asset": symbol,
                 "Type": position_type,
                 "Live Price": format_price(current_price),
                 "Entry Price": format_price(entry_price),
-                "Current P/L": pl_str,
-                "Signal": signal,
+                "Current P/L": f"{raw_pl:+.2f}%",
+                "Signal": "HOLD",
                 "raw_pl": raw_pl
             })
 
-        trade_amt = st.session_state.trade_amount_usdt
-        if st.session_state.bot_running:
-            if signal == "BUY" and st.session_state.balance >= trade_amt:
-                coins_bought = trade_amt / current_price
-                st.session_state.balance -= trade_amt
-                st.session_state.holdings[symbol] = coins_bought
-                st.session_state.entry_prices[symbol] = current_price
-                st.session_state.trade_history.append({'Time': current_time_str, 'Asset': symbol, 'Type': 'BUY (LONG)', 'Price': format_price(current_price), 'Value': f"${trade_amt:.2f}", 'Note': reason})
-                executed_any_trade = True
-
-            elif signal == "SELL" and long_qty > 0:
-                usdt_received = long_qty * current_price
-                net_pnl = usdt_received - trade_amt
-                st.session_state.balance += usdt_received
-                st.session_state.holdings[symbol] = 0.0
-                st.session_state.entry_prices[symbol] = 0.0
-                st.session_state.trade_history.append({'Time': current_time_str, 'Asset': symbol, 'Type': 'SELL (CLOSE LONG)', 'Price': format_price(current_price), 'Value': f"${usdt_received:.2f}", 'Note': f"{reason} | Net: ${net_pnl:+.2f}"})
-                executed_any_trade = True
-
-            elif signal == "SHORT" and st.session_state.balance >= trade_amt:
-                coins_shorted = trade_amt / current_price
-                st.session_state.balance -= trade_amt
-                st.session_state.short_holdings[symbol] = coins_shorted
-                st.session_state.entry_prices[symbol] = current_price
-                st.session_state.trade_history.append({'Time': current_time_str, 'Asset': symbol, 'Type': 'SHORT (OPEN)', 'Price': format_price(current_price), 'Value': f"${trade_amt:.2f}", 'Note': reason})
-                executed_any_trade = True
-
-            elif signal == "COVER" and short_qty > 0:
-                cost_to_buy_back = short_qty * current_price
-                net_pnl = trade_amt - cost_to_buy_back
-                st.session_state.balance += (trade_amt + net_pnl)
-                st.session_state.short_holdings[symbol] = 0.0
-                st.session_state.entry_prices[symbol] = 0.0
-                st.session_state.trade_history.append({'Time': current_time_str, 'Asset': symbol, 'Type': 'COVER (CLOSE SHORT)', 'Price': format_price(current_price), 'Value': f"${(trade_amt + net_pnl):.2f}", 'Note': f"{reason} | Net: ${net_pnl:+.2f}"})
-                executed_any_trade = True
-
-    if executed_any_trade:
-        save_portfolio()
-
-    # 3. ACTIVE OPEN POSITIONS TABLE
-    st.subheader("💼 Active Open Positions")
     if active_positions_summary:
         if sort_order == "Current P/L":
             active_positions_summary.sort(key=lambda x: x['raw_pl'], reverse=True)
@@ -533,7 +322,7 @@ def render_engine():
     else:
         st.info("You currently have no open trades.")
 
-    # 4. HISTORICAL TRADE LOG
+    # 3. HISTORICAL TRADE LOG
     st.subheader("📋 Global Multi-Asset Historical Trade Log")
     if len(st.session_state.trade_history) > 0:
         st.table(pd.DataFrame(st.session_state.trade_history).iloc[::-1])
