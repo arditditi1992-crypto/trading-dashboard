@@ -25,8 +25,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Auto-refresh UI every 3 seconds for batch updates
-st_autorefresh(interval=3000, limit=None, key="bot_ticker_refresh")
+# Auto-refresh UI every 4 seconds to balance live updates with rate limits
+st_autorefresh(interval=4000, limit=None, key="bot_ticker_refresh")
 
 st.title("🤖 24/7 Crypto AI Bot (Hybrid Live-Tick Engine)")
 
@@ -180,15 +180,14 @@ def fetch_all_live_prices():
     try:
         symbols_param = json.dumps(st.session_state.selected_symbols).replace(" ", "")
         url = f"https://api.binance.com/api/v3/ticker/price?symbols={symbols_param}"
-        r = requests.get(url, timeout=1.5)
+        r = requests.get(url, timeout=2.5)
         if r.status_code == 200:
             return {item['symbol']: float(item['price']) for item in r.json()}
     except Exception:
         pass
 
-    # Fallback to general endpoint if param query fails
     try:
-        r = requests.get("https://api.binance.com/api/v3/ticker/price", timeout=1.5)
+        r = requests.get("https://api.binance.com/api/v3/ticker/price", timeout=2.5)
         if r.status_code == 200:
             return {item['symbol']: float(item['price']) for item in r.json()}
     except Exception:
@@ -196,15 +195,14 @@ def fetch_all_live_prices():
 
     return {}
 
-# Cache historical candles for 30s so indicator calculations don't slow down live price updates
-@st.cache_data(ttl=30, show_spinner=False)
-def fetch_historical_candles(symbol):
+# Un-cached fetcher with strict fallbacks so failed requests retry immediately on next tick
+def fetch_historical_candles_direct(symbol):
     try:
         url_5m = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=5m&limit=50"
-        r_5m = requests.get(url_5m, timeout=1.5)
+        r_5m = requests.get(url_5m, timeout=2.0)
 
         url_1h = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=50"
-        r_1h = requests.get(url_1h, timeout=1.5)
+        r_1h = requests.get(url_1h, timeout=2.0)
 
         if r_5m.status_code == 200 and r_1h.status_code == 200:
             candles_5m = r_5m.json()
@@ -324,7 +322,6 @@ def render_engine():
     st.metric("Total Cash Balance", f"${st.session_state.balance:,.2f} USDT")
     current_time_str = datetime.now().strftime("%H:%M:%S")
 
-    # Fetch live ticker prices in a single batch
     live_prices = fetch_all_live_prices()
 
     # 1. TOP 10 OVERVIEW TABLE
@@ -371,15 +368,23 @@ def render_engine():
     # 2. RUN INDICATOR ANALYSIS & TRADING LOGIC
     active_positions_summary = []
     
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        cached_histories = list(executor.map(fetch_historical_candles, st.session_state.selected_symbols))
+    # Process only selected symbols (throttled pool size)
+    symbols_to_process = st.session_state.selected_symbols[:15]
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        cached_histories = list(executor.map(fetch_historical_candles_direct, symbols_to_process))
 
     executed_any_trade = False
 
-    for symbol, history in zip(st.session_state.selected_symbols, cached_histories):
+    for symbol, history in zip(symbols_to_process, cached_histories):
         live_price = live_prices.get(symbol, 0.0)
         if live_price == 0.0:
             continue
+
+        # Active Position TP/SL Check Failsafe (Runs even if history sync failed)
+        long_qty = st.session_state.holdings.get(symbol, 0.0)
+        short_qty = st.session_state.short_holdings.get(symbol, 0.0)
+        entry_price = st.session_state.entry_prices.get(symbol, 0.0)
 
         if history is not None:
             ta_data = calculate_live_indicators(history, live_price, st.session_state.vol_multiplier)
@@ -387,11 +392,19 @@ def render_engine():
         else:
             current_price = live_price
             signal = "HOLD"
-            reason = "⏳ Syncing Indicators..."
-
-        long_qty = st.session_state.holdings.get(symbol, 0.0)
-        short_qty = st.session_state.short_holdings.get(symbol, 0.0)
-        entry_price = st.session_state.entry_prices.get(symbol, 0.0)
+            # Active Position Exit Monitoring Backup
+            if long_qty > 0 and entry_price > 0:
+                pnl_pct = ((current_price - entry_price) / entry_price) * 100.0
+                if pnl_pct >= st.session_state.take_profit_pct: signal, reason = "SELL", f"Long TP (+{pnl_pct:.2f}%)"
+                elif pnl_pct <= -st.session_state.stop_loss_pct: signal, reason = "SELL", f"Long SL ({pnl_pct:.2f}%)"
+                else: reason = f"Holding Long ({pnl_pct:+.2f}%)"
+            elif short_qty > 0 and entry_price > 0:
+                pnl_pct = ((entry_price - current_price) / entry_price) * 100.0
+                if pnl_pct >= st.session_state.take_profit_pct: signal, reason = "COVER", f"Short TP (+{pnl_pct:.2f}%)"
+                elif pnl_pct <= -st.session_state.stop_loss_pct: signal, reason = "COVER", f"Short SL ({pnl_pct:.2f}%)"
+                else: reason = f"Holding Short ({pnl_pct:+.2f}%)"
+            else:
+                reason = "⚡ Monitoring Price Feed..."
 
         position_type = "NONE"
         pl_str = "0.00%"
@@ -418,7 +431,7 @@ def render_engine():
             })
 
         trade_amt = st.session_state.trade_amount_usdt
-        if st.session_state.bot_running and history is not None:
+        if st.session_state.bot_running:
             if signal == "BUY" and st.session_state.balance >= trade_amt:
                 coins_bought = trade_amt / current_price
                 st.session_state.balance -= trade_amt
