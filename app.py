@@ -1,10 +1,10 @@
 import streamlit as st
 import pandas as pd
-import requests
 import json
 import os
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
+import ccxt
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="24/7 Multi-Timeframe Crypto AI Bot", layout="wide")
@@ -30,16 +30,24 @@ st.title("🤖 24/7 Crypto AI Bot (Cloud-Safe Engine)")
 
 PORTFOLIO_FILE = "portfolio.json"
 
-COINMAP = {
-    "BTCUSDT": "bitcoin", "ETHUSDT": "ethereum", "SOLUSDT": "solana",
-    "XRPUSDT": "binance-coin", "BNBUSDT": "binance-coin", "DOGEUSDT": "dogecoin",
-    "ADAUSDT": "cardano", "AVAXUSDT": "avalanche", "SHIBUSDT": "shiba-inu",
-    "LINKUSDT": "chainlink"
-}
-TOP_10_HISTORICAL_SYMBOLS = list(COINMAP.keys())
-ALL_TRADING_SYMBOLS = TOP_10_HISTORICAL_SYMBOLS
+# Full 88+ Active Trading Coins list
+ALL_TRADING_SYMBOLS = [
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", 
+    "SHIBUSDT", "LINKUSDT", "SUIUSDT", "PEPEUSDT", "NEARUSDT", "RENDERUSDT", "FETUSDT", 
+    "INJUSDT", "OPUSDT", "ARBUSDT", "MATICUSDT", "DOTUSDT", "ATOMUSDT", "UNIUSDT", "LTCUSDT", 
+    "ETCUSDT", "BCHUSDT", "APTUSDT", "ICPUSDT", "FILUSDT", "HBARUSDT", "STXUSDT", "IMXUSDT", 
+    "NEARUSDT", "GRTUSDT", "RNDRUSDT", "RUNEUSDT", "AAVEUSDT", "SNXUSDT", "MKRUSDT", "FTMUSDT", 
+    "THETAUSDT", "TIAUSDT", "SEIUSDT", "STRKUSDT", "WIFUSDT", "FLOKIUSDT", "BONKUSDT", "JUPUSDT", 
+    "PYTHUSDT", "MANTAUSDT", "ALTUSDT", "ZETAUSDT", "DYMUSDT", "PORTALUSDT", "AXLUSDT", "ETHFIUSDT", 
+    "ENAUSDT", "SAGAUSDT", "TNSRUSDT", "OMNIUSDT", "REZUSDT", "BBUSDT", "NOTUSDT", "IOUSDT", 
+    "ZKUSDT", "LISTAUSDT", "BANANAUSDT", "RENDERUSDT", "TONUSDT", "DOGSUSDT", "NEIROUSDT", "TURBOUSDT", 
+    "CATIUSDT", "HMSTRUSDT", "EIGENUSDT", "BNSOLUSDT", "SCRUSDT", "GOATUSDT", "PNUTUSDT", "ACTUSDT", 
+    "CHILLGUYUSDT", "USUALUSDT", "THEUSDT", "PENGUUSDT", "TRUMPUSDT", "MELANIAUSDT", "VIRTUALUSDT", "AI16ZUSDT"
+]
 
-# --- LOAD LIVE DATA FROM BACKGROUND ENGINE ---
+# Initialize exchange for reliable cloud price fetching via CCXT
+exchange = ccxt.binance({'enableRateLimit': True})
+
 def load_portfolio():
     if os.path.exists(PORTFOLIO_FILE):
         try:
@@ -51,7 +59,7 @@ def load_portfolio():
         "balance": 1000.0, "holdings": {}, "short_holdings": {}, "entry_prices": {},
         "trade_history": [], "trade_amount_usdt": 10.0, "take_profit_pct": 1.5,
         "stop_loss_pct": 2.5, "rsi_oversold": 30, "rsi_overbought": 72,
-        "selected_symbols": ALL_TRADING_SYMBOLS, "allow_shorts": True,
+        "selected_symbols": ALL_TRADING_SYMBOLS[:10], "allow_shorts": True,
         "vol_multiplier": 1.3, "bot_running": True
     }
 
@@ -79,10 +87,9 @@ st.sidebar.subheader("📊 Indicator Thresholds")
 rsi_oversold = st.sidebar.slider("RSI Oversold (Buy)", 15, 45, int(saved_data.get("rsi_oversold", 30)), 1)
 rsi_overbought = st.sidebar.slider("RSI Overbought (Short)", 55, 90, int(saved_data.get("rsi_overbought", 72)), 1)
 
-valid_defaults = [s for s in saved_data.get("selected_symbols", ALL_TRADING_SYMBOLS) if s in ALL_TRADING_SYMBOLS]
-selected_symbols = st.sidebar.multiselect(f"Active Trading Coins", options=sorted(ALL_TRADING_SYMBOLS), default=valid_defaults if valid_defaults else ALL_TRADING_SYMBOLS)
+valid_defaults = [s for s in saved_data.get("selected_symbols", ALL_TRADING_SYMBOLS[:10]) if s in ALL_TRADING_SYMBOLS]
+selected_symbols = st.sidebar.multiselect(f"Active Trading Coins", options=sorted(ALL_TRADING_SYMBOLS), default=valid_defaults if valid_defaults else ALL_TRADING_SYMBOLS[:10])
 
-# Control Buttons
 col_start, col_stop, col_reset = st.columns(3)
 with col_start:
     if st.button("▶️ START / RESUME BOT", use_container_width=True):
@@ -94,13 +101,12 @@ with col_stop:
         st.toast("Bot paused.", icon="🔴")
 with col_reset:
     if st.button("🔄 Reset Portfolio ($1,000)"):
-        saved_data = load_portfolio() # Reset to defaults logic
+        saved_data = load_portfolio()
         saved_data["balance"] = 1000.0
         saved_data["holdings"] = {}
         saved_data["trade_history"] = []
         st.rerun()
 
-# Save UI settings back to JSON for the engine
 saved_data.update({
     "trade_amount_usdt": trade_amount_usdt, "allow_shorts": allow_shorts,
     "vol_multiplier": vol_multiplier, "take_profit_pct": take_profit_pct,
@@ -111,28 +117,24 @@ with open(PORTFOLIO_FILE, "w") as f:
     json.dump(saved_data, f, indent=4)
 
 if saved_data["bot_running"]:
-    st.success(f"🟢 STATUS: BOT ACTIVE (Trading {len(selected_symbols)} Coins via Cloud-Safe Engine)")
+    st.success(f"🟢 STATUS: BOT ACTIVE (Trading {len(selected_symbols)} Coins via CCXT)")
 else:
     st.warning("🔴 STATUS: BOT PAUSED")
 
-# --- UNBLOCKED CLOUD PRICE FETCHING ENGINE ---
-def fetch_cloud_safe_prices():
+# --- RELIABLE CCXT CLOUD PRICE FETCHING ---
+def fetch_ccxt_prices():
     try:
-        r = requests.get("https://api.coincap.io/v2/assets?limit=100", timeout=3.0)
-        if r.status_code == 200:
-            data = r.json().get("data", [])
-            price_dict = {}
-            inv_map = {v: k for k, v in COINMAP.items()}
-            for item in data:
-                asset_id = item.get("id")
-                if asset_id in inv_map and item.get("priceUsd"): price_dict[inv_map[asset_id]] = float(item["priceUsd"])
-            if "XRPUSDT" not in price_dict:
-                for item in data:
-                    if item.get("symbol") == "XRP": price_dict["XRPUSDT"] = float(item["priceUsd"])
-            if price_dict:
-                st.session_state.cached_prices.update(price_dict)
-                return st.session_state.cached_prices
-    except Exception: pass
+        # Fetch tickers in batch using CCXT
+        tickers = exchange.fetch_tickers()
+        price_dict = {}
+        for sym, data in tickers.items():
+            clean_sym = sym.replace("/", "")
+            if clean_sym in ALL_TRADING_SYMBOLS and data.get('last'):
+                price_dict[clean_sym] = float(data['last'])
+        if price_dict:
+            st.session_state.cached_prices.update(price_dict)
+    except Exception:
+        pass
     return st.session_state.cached_prices
 
 def format_price(price):
@@ -143,11 +145,11 @@ def format_price(price):
 
 # --- RENDERING ENGINE ---
 st.metric("Total Cash Balance", f"${saved_data.get('balance', 1000.0):,.2f} USDT")
-live_prices = fetch_cloud_safe_prices()
+live_prices = fetch_ccxt_prices()
 
-st.subheader("📊 Top 10 Most Traded Coins (Live Overview)")
-top_10_summary = []
-for symbol in TOP_10_HISTORICAL_SYMBOLS:
+st.subheader(f"📊 Top Traded Coins Overview ({len(selected_symbols)} Active Coins)")
+summary_rows = []
+for symbol in selected_symbols:
     current_price = live_prices.get(symbol, 0.0)
     long_qty = saved_data.get("holdings", {}).get(symbol, 0.0)
     entry_price = saved_data.get("entry_prices", {}).get(symbol, 0.0)
@@ -160,15 +162,15 @@ for symbol in TOP_10_HISTORICAL_SYMBOLS:
         raw_pl = ((current_price - entry_price) / entry_price) * 100
         pl_str = f"{raw_pl:+.2f}%"
 
-    top_10_summary.append({"Asset": symbol, "Price": format_price(current_price), "Position": pos, "Current P/L": pl_str, "raw_pl": raw_pl})
+    summary_rows.append({"Asset": symbol, "Price": format_price(current_price), "Position": pos, "Current P/L": pl_str, "raw_pl": raw_pl})
 
-if top_10_summary:
-    if sort_order == "Current P/L": top_10_summary.sort(key=lambda x: x['raw_pl'], reverse=True)
-    st.dataframe(pd.DataFrame(top_10_summary).drop(columns=['raw_pl']), use_container_width=True)
+if summary_rows:
+    if sort_order == "Current P/L": summary_rows.sort(key=lambda x: x['raw_pl'], reverse=True)
+    st.dataframe(pd.DataFrame(summary_rows).drop(columns=['raw_pl']), use_container_width=True)
 
 st.write("---")
 st.subheader("💼 Active Open Positions")
-active_positions = [row for row in top_10_summary if row["Position"] != "NONE"]
+active_positions = [row for row in summary_rows if row["Position"] != "NONE"]
 if active_positions:
     st.dataframe(pd.DataFrame(active_positions).drop(columns=['raw_pl']), use_container_width=True)
 else:
