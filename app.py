@@ -1,10 +1,10 @@
 import streamlit as st
 import pandas as pd
+import requests
 import json
 import os
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
-import ccxt
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="24/7 Multi-Timeframe Crypto AI Bot", layout="wide")
@@ -36,17 +36,14 @@ ALL_TRADING_SYMBOLS = [
     "SHIBUSDT", "LINKUSDT", "SUIUSDT", "PEPEUSDT", "NEARUSDT", "RENDERUSDT", "FETUSDT", 
     "INJUSDT", "OPUSDT", "ARBUSDT", "MATICUSDT", "DOTUSDT", "ATOMUSDT", "UNIUSDT", "LTCUSDT", 
     "ETCUSDT", "BCHUSDT", "APTUSDT", "ICPUSDT", "FILUSDT", "HBARUSDT", "STXUSDT", "IMXUSDT", 
-    "NEARUSDT", "GRTUSDT", "RNDRUSDT", "RUNEUSDT", "AAVEUSDT", "SNXUSDT", "MKRUSDT", "FTMUSDT", 
+    "GRTUSDT", "RNDRUSDT", "RUNEUSDT", "AAVEUSDT", "SNXUSDT", "MKRUSDT", "FTMUSDT", 
     "THETAUSDT", "TIAUSDT", "SEIUSDT", "STRKUSDT", "WIFUSDT", "FLOKIUSDT", "BONKUSDT", "JUPUSDT", 
     "PYTHUSDT", "MANTAUSDT", "ALTUSDT", "ZETAUSDT", "DYMUSDT", "PORTALUSDT", "AXLUSDT", "ETHFIUSDT", 
     "ENAUSDT", "SAGAUSDT", "TNSRUSDT", "OMNIUSDT", "REZUSDT", "BBUSDT", "NOTUSDT", "IOUSDT", 
-    "ZKUSDT", "LISTAUSDT", "BANANAUSDT", "RENDERUSDT", "TONUSDT", "DOGSUSDT", "NEIROUSDT", "TURBOUSDT", 
+    "ZKUSDT", "LISTAUSDT", "BANANAUSDT", "TONUSDT", "DOGSUSDT", "NEIROUSDT", "TURBOUSDT", 
     "CATIUSDT", "HMSTRUSDT", "EIGENUSDT", "BNSOLUSDT", "SCRUSDT", "GOATUSDT", "PNUTUSDT", "ACTUSDT", 
     "CHILLGUYUSDT", "USUALUSDT", "THEUSDT", "PENGUUSDT", "TRUMPUSDT", "MELANIAUSDT", "VIRTUALUSDT", "AI16ZUSDT"
 ]
-
-# Initialize exchange for reliable cloud price fetching via CCXT
-exchange = ccxt.binance({'enableRateLimit': True})
 
 def load_portfolio():
     if os.path.exists(PORTFOLIO_FILE):
@@ -117,22 +114,19 @@ with open(PORTFOLIO_FILE, "w") as f:
     json.dump(saved_data, f, indent=4)
 
 if saved_data["bot_running"]:
-    st.success(f"🟢 STATUS: BOT ACTIVE (Trading {len(selected_symbols)} Coins via CCXT)")
+    st.success(f"🟢 STATUS: BOT ACTIVE (Trading {len(selected_symbols)} Coins)")
 else:
     st.warning("🔴 STATUS: BOT PAUSED")
 
-# --- RELIABLE CCXT CLOUD PRICE FETCHING ---
-def fetch_ccxt_prices():
+# --- LIGHTWEIGHT BINANCE REST PRICE FETCHING ---
+def fetch_binance_prices():
     try:
-        # Fetch tickers in batch using CCXT
-        tickers = exchange.fetch_tickers()
-        price_dict = {}
-        for sym, data in tickers.items():
-            clean_sym = sym.replace("/", "")
-            if clean_sym in ALL_TRADING_SYMBOLS and data.get('last'):
-                price_dict[clean_sym] = float(data['last'])
-        if price_dict:
-            st.session_state.cached_prices.update(price_dict)
+        r = requests.get("https://api.binance.com/api/v3/ticker/price", timeout=3.0)
+        if r.status_code == 200:
+            data = r.json()
+            price_dict = {item['symbol']: float(item['price']) for item in data if item['symbol'] in ALL_TRADING_SYMBOLS}
+            if price_dict:
+                st.session_state.cached_prices.update(price_dict)
     except Exception:
         pass
     return st.session_state.cached_prices
@@ -145,7 +139,7 @@ def format_price(price):
 
 # --- RENDERING ENGINE ---
 st.metric("Total Cash Balance", f"${saved_data.get('balance', 1000.0):,.2f} USDT")
-live_prices = fetch_ccxt_prices()
+live_prices = fetch_binance_prices()
 
 st.subheader(f"📊 Top Traded Coins Overview ({len(selected_symbols)} Active Coins)")
 summary_rows = []
