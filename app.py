@@ -145,33 +145,40 @@ saved_data.update({
     "selected_symbols": selected_symbols
 })
 
-# --- BULLETPROOF PRICE & RSI ENGINE (WITH PERSISTENT CACHING) ---
+# --- BULLETPROOF PRICE & RSI ENGINE (STICKY CACHE PROTECTION) ---
 def fetch_market_data():
+    if 'cached_prices' not in st.session_state:
+        st.session_state.cached_prices = {}
+
     price_dict = {}
+    
     try:
-        r = requests.get("https://api.binance.com/api/v3/ticker/price", timeout=4.0)
+        r = requests.get("https://api.binance.com/api/v3/ticker/price", timeout=5.0)
         if r.status_code == 200:
             for item in r.json():
                 sym = item['symbol']
                 if sym in ALL_TRADING_SYMBOLS:
-                    price_dict[sym] = float(item['price'])
+                    p = float(item['price'])
+                    if p > 0:
+                        price_dict[sym] = p
     except Exception:
         pass
 
-    if not price_dict:
+    if len(price_dict) < len(ALL_TRADING_SYMBOLS):
         try:
-            r2 = requests.get("https://api.mexc.com/api/v3/ticker/price", timeout=4.0)
+            r2 = requests.get("https://api.mexc.com/api/v3/ticker/price", timeout=5.0)
             if r2.status_code == 200:
                 for item in r2.json():
                     sym = item['symbol']
-                    if sym in ALL_TRADING_SYMBOLS:
-                        price_dict[sym] = float(item['price'])
+                    if sym in ALL_TRADING_SYMBOLS and sym not in price_dict:
+                        p = float(item['price'])
+                        if p > 0:
+                            price_dict[sym] = p
         except Exception:
             pass
 
-    # Update session cache with newly fetched prices, keeping older ones if missing
     for sym in ALL_TRADING_SYMBOLS:
-        if sym in price_dict:
+        if sym in price_dict and price_dict[sym] > 0:
             st.session_state.cached_prices[sym] = price_dict[sym]
         elif sym not in st.session_state.cached_prices:
             st.session_state.cached_prices[sym] = 0.0
