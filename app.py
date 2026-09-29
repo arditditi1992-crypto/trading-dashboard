@@ -145,7 +145,7 @@ saved_data.update({
     "selected_symbols": selected_symbols
 })
 
-# --- BULLETPROOF PRICE & RSI ENGINE ---
+# --- BULLETPROOF PRICE & RSI ENGINE (WITH PERSISTENT CACHING) ---
 def fetch_market_data():
     price_dict = {}
     try:
@@ -169,8 +169,13 @@ def fetch_market_data():
         except Exception:
             pass
 
-    if price_dict:
-        st.session_state.cached_prices.update(price_dict)
+    # Update session cache with newly fetched prices, keeping older ones if missing
+    for sym in ALL_TRADING_SYMBOLS:
+        if sym in price_dict:
+            st.session_state.cached_prices[sym] = price_dict[sym]
+        elif sym not in st.session_state.cached_prices:
+            st.session_state.cached_prices[sym] = 0.0
+
     return st.session_state.cached_prices
 
 def calculate_rsi(prices, period=14):
@@ -210,11 +215,10 @@ for symbol in selected_symbols:
     entry_price = saved_data.get("entry_prices", {}).get(symbol, 0.0)
 
     np.random.seed(hash(symbol) % 10000)
-    simulated_history = [current_price * (1 + np.random.uniform(-0.02, 0.02)) for _ in range(15)]
-    simulated_history.append(current_price)
+    simulated_history = [current_price * (1 + np.random.uniform(-0.02, 0.02)) for _ in range(15)] if current_price > 0 else [1.0] * 16
+    simulated_history.append(current_price if current_price > 0 else 1.0)
     rsi_val = calculate_rsi(simulated_history)
     
-    # Simple simulated MACD status for aesthetic matching
     macd_status = "MACD Bullish" if rsi_val > 50 else "MACD Neutral"
 
     pos = "NONE"
