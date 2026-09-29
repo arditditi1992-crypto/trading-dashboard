@@ -27,7 +27,7 @@ st.markdown("""
 # Refresh every 3 seconds
 st_autorefresh(interval=3000, limit=None, key="bot_ticker_refresh")
 
-st.title("🤖 24/7 Crypto AI Bot (Railway Production Engine)")
+st.title("🤖 24/7 Crypto AI Bot (Auto-Execution Engine)")
 
 PORTFOLIO_FILE = "portfolio.json"
 
@@ -78,8 +78,6 @@ saved_data = load_portfolio()
 
 if 'cached_prices' not in st.session_state: 
     st.session_state.cached_prices = {}
-if 'historical_candles' not in st.session_state:
-    st.session_state.historical_candles = {}
 
 # --- SIDEBAR CONFIGURATION ---
 st.sidebar.header("⚙️ Bot Settings")
@@ -133,7 +131,6 @@ with col_reset:
         if os.path.exists(PORTFOLIO_FILE):
             os.remove(PORTFOLIO_FILE)
         st.session_state.cached_prices = {}
-        st.session_state.historical_candles = {}
         st.rerun()
 
 # Save settings back to JSON
@@ -147,19 +144,10 @@ saved_data.update({
     "rsi_overbought": rsi_overbought,
     "selected_symbols": selected_symbols
 })
-with open(PORTFOLIO_FILE, "w") as f:
-    json.dump(saved_data, f, indent=4)
-
-if saved_data["bot_running"]:
-    st.success(f"🟢 STATUS: BOT ACTIVE (Tracking {len(selected_symbols)} Active Coins)")
-else:
-    st.warning("🔴 STATUS: BOT PAUSED")
 
 # --- BULLETPROOF PRICE & RSI ENGINE ---
 def fetch_market_data():
     price_dict = {}
-    
-    # 1. Try Binance Prices & Klines (fallback to MEXC if needed)
     try:
         r = requests.get("https://api.binance.com/api/v3/ticker/price", timeout=4.0)
         if r.status_code == 200:
@@ -183,7 +171,6 @@ def fetch_market_data():
 
     if price_dict:
         st.session_state.cached_prices.update(price_dict)
-
     return st.session_state.cached_prices
 
 def calculate_rsi(prices, period=14):
@@ -196,8 +183,7 @@ def calculate_rsi(prices, period=14):
     if down == 0:
         return 100.0
     rs = up / down
-    rsi = 100.0 - (100.0 / (1.0 + rs))
-    return float(rsi)
+    return float(100.0 - (100.0 / (1.0 + rs)))
 
 def format_price(price):
     if price <= 0:
@@ -209,11 +195,10 @@ def format_price(price):
     else:
         return f"${price:,.2f}"
 
-# --- RENDERING ENGINE ---
+# --- RENDERING & AUTOMATED EXECUTION ENGINE ---
 st.metric("Total Cash Balance", f"${saved_data.get('balance', 1000.0):,.2f} USDT")
 live_prices = fetch_market_data()
 
-# 1. OVERVIEW TABLE
 st.subheader(f"📊 Traded Coins Overview ({len(selected_symbols)} Active Coins)")
 
 summary_rows = []
@@ -224,8 +209,6 @@ for symbol in selected_symbols:
     short_qty = saved_data.get("short_holdings", {}).get(symbol, 0.0)
     entry_price = saved_data.get("entry_prices", {}).get(symbol, 0.0)
 
-    # Generate pseudo historical array for realistic live RSI calculation if needed
-    # (or simulated minor variance to populate RSI dynamically)
     np.random.seed(hash(symbol) % 10000)
     simulated_history = [current_price * (1 + np.random.uniform(-0.02, 0.02)) for _ in range(15)]
     simulated_history.append(current_price)
@@ -241,15 +224,9 @@ for symbol in selected_symbols:
         pos = "LONG"
         raw_pl = ((current_price - entry_price) / entry_price) * 100
         pl_str = f"{raw_pl:+.2f}%"
-        if raw_pl >= take_profit_pct:
+        if raw_pl >= take_profit_pct or raw_pl <= -stop_loss_pct or rsi_val >= rsi_overbought:
             status = "CLOSE"
-            reason = f"Take profit target reached (+{take_profit_pct}%)"
-        elif raw_pl <= -stop_loss_pct:
-            status = "CLOSE"
-            reason = f"Stop loss triggered (-{stop_loss_pct}%)"
-        elif rsi_val >= rsi_overbought:
-            status = "CLOSE"
-            reason = f"RSI overbought ({rsi_val:.1f}), locking profit"
+            reason = f"Exit condition met (P/L: {raw_pl:+.2f}%)"
         else:
             status = "HOLD"
             reason = "Active Long position steady"
@@ -258,26 +235,55 @@ for symbol in selected_symbols:
         pos = "SHORT"
         raw_pl = ((entry_price - current_price) / entry_price) * 100
         pl_str = f"{raw_pl:+.2f}%"
-        if raw_pl >= take_profit_pct:
+        if raw_pl >= take_profit_pct or raw_pl <= -stop_loss_pct or rsi_val <= rsi_oversold:
             status = "CLOSE"
-            reason = f"Short Take profit reached (+{take_profit_pct}%)"
-        elif raw_pl <= -stop_loss_pct:
-            status = "CLOSE"
-            reason = f"Short Stop loss triggered (-{stop_loss_pct}%)"
-        elif rsi_val <= rsi_oversold:
-            status = "CLOSE"
-            reason = f"RSI oversold ({rsi_val:.1f}), closing short"
+            reason = f"Exit condition met (P/L: {raw_pl:+.2f}%)"
         else:
             status = "HOLD"
             reason = "Active Short position steady"
     else:
-        # No position open, look for entry signals
-        if rsi_val <= rsi_oversold:
-            status = "BUY"
-            reason = f"RSI oversold ({rsi_val:.1f} <= {rsi_oversold})"
-        elif allow_shorts and rsi_val >= rsi_overbought:
-            status = "SHORT"
-            reason = f"RSI overbought ({rsi_val:.1f} >= {rsi_overbought})"
+        # --- AUTOMATED TRADE EXECUTION LOOP ---
+        if saved_data["bot_running"] and current_price > 0:
+            cash = saved_data.get("balance", 1000.0)
+            trade_size = saved_data.get("trade_amount_usdt", 10.0)
+            
+            if cash >= trade_size:
+                if rsi_val <= rsi_oversold:
+                    saved_data["balance"] -= trade_size
+                    saved_data.setdefault("holdings", {})[symbol] = trade_size / current_price
+                    saved_data.setdefault("entry_prices", {})[symbol] = current_price
+                    saved_data.setdefault("trade_history", []).append({
+                        "Time": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "Asset": symbol,
+                        "Type": "AUTO_BUY",
+                        "Price": current_price,
+                        "Amount": trade_size
+                    })
+                    pos = "LONG"
+                    entry_price = current_price
+                    status = "BUY EXECUTED"
+                    reason = f"RSI oversold ({rsi_val:.1f}), opened Long"
+                elif allow_shorts and rsi_val >= rsi_overbought:
+                    saved_data["balance"] -= trade_size
+                    saved_data.setdefault("short_holdings", {})[symbol] = trade_size / current_price
+                    saved_data.setdefault("entry_prices", {})[symbol] = current_price
+                    saved_data.setdefault("trade_history", []).append({
+                        "Time": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "Asset": symbol,
+                        "Type": "AUTO_SHORT",
+                        "Price": current_price,
+                        "Amount": trade_size
+                    })
+                    pos = "SHORT"
+                    entry_price = current_price
+                    status = "SHORT EXECUTED"
+                    reason = f"RSI overbought ({rsi_val:.1f}), opened Short"
+                else:
+                    status = "HOLD"
+                    reason = f"RSI neutral ({rsi_val:.1f}), waiting for trigger"
+            else:
+                status = "HOLD"
+                reason = "Insufficient cash balance"
         else:
             status = "HOLD"
             reason = f"RSI neutral ({rsi_val:.1f}), waiting for trigger"
@@ -292,6 +298,10 @@ for symbol in selected_symbols:
         "Reason": reason,
         "raw_pl": raw_pl
     })
+
+# Save updated portfolio states back to JSON automatically
+with open(PORTFOLIO_FILE, "w") as f:
+    json.dump(saved_data, f, indent=4)
 
 if summary_rows:
     if sort_order == "Current P/L":
