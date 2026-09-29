@@ -3,7 +3,6 @@ import pandas as pd
 import requests
 import json
 import os
-from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 
 # --- PAGE CONFIGURATION ---
@@ -24,14 +23,14 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Auto-refresh UI every 3 seconds for fast live updates
+# Refresh every 3 seconds
 st_autorefresh(interval=3000, limit=None, key="bot_ticker_refresh")
 
-st.title("🤖 24/7 Multi-Timeframe Crypto AI Bot Dashboard")
+st.title("🤖 24/7 Crypto AI Bot (Railway Production Engine)")
 
 PORTFOLIO_FILE = "portfolio.json"
 
-# Full active trading coins list (80+ coins)
+# Complete list of 88+ Active Trading Coins
 ALL_TRADING_SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", 
     "SHIBUSDT", "LINKUSDT", "SUIUSDT", "PEPEUSDT", "NEARUSDT", "RENDERUSDT", "FETUSDT", 
@@ -47,13 +46,7 @@ ALL_TRADING_SYMBOLS = [
 ]
 
 def load_portfolio():
-    if os.path.exists(PORTFOLIO_FILE):
-        try:
-            with open(PORTFOLIO_FILE, "r") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {
+    data = {
         "balance": 1000.0,
         "holdings": {},
         "short_holdings": {},
@@ -64,11 +57,22 @@ def load_portfolio():
         "stop_loss_pct": 2.5,
         "rsi_oversold": 30,
         "rsi_overbought": 72,
-        "selected_symbols": ALL_TRADING_SYMBOLS,
+        "selected_symbols": ALL_TRADING_SYMBOLS,  # Force all 88+ by default
         "allow_shorts": True,
         "vol_multiplier": 1.3,
         "bot_running": True
     }
+    if os.path.exists(PORTFOLIO_FILE):
+        try:
+            with open(PORTFOLIO_FILE, "r") as f:
+                saved = json.load(f)
+                data.update(saved)
+                # Force override selected symbols if it was stuck on 10 or empty
+                if not data.get("selected_symbols") or len(data.get("selected_symbols")) < len(ALL_TRADING_SYMBOLS):
+                    data["selected_symbols"] = ALL_TRADING_SYMBOLS
+        except Exception:
+            pass
+    return data
 
 saved_data = load_portfolio()
 
@@ -104,11 +108,10 @@ st.sidebar.subheader("📊 Indicator Thresholds")
 rsi_oversold = st.sidebar.slider("RSI Oversold (Buy)", 15, 45, int(saved_data.get("rsi_oversold", 30)), 1)
 rsi_overbought = st.sidebar.slider("RSI Overbought (Short)", 55, 90, int(saved_data.get("rsi_overbought", 72)), 1)
 
-valid_defaults = [s for s in saved_data.get("selected_symbols", ALL_TRADING_SYMBOLS) if s in ALL_TRADING_SYMBOLS]
 selected_symbols = st.sidebar.multiselect(
     f"Active Trading Coins ({len(ALL_TRADING_SYMBOLS)} Available)",
     options=sorted(ALL_TRADING_SYMBOLS),
-    default=valid_defaults if valid_defaults else ALL_TRADING_SYMBOLS
+    default=saved_data.get("selected_symbols", ALL_TRADING_SYMBOLS)
 )
 
 # Control Buttons
@@ -124,12 +127,10 @@ with col_stop:
         st.toast("Bot paused.", icon="🔴")
 
 with col_reset:
-    if st.button("🔄 Reset Portfolio"):
-        saved_data["balance"] = 1000.0
-        saved_data["holdings"] = {}
-        saved_data["short_holdings"] = {}
-        saved_data["entry_prices"] = {}
-        saved_data["trade_history"] = []
+    if st.button("🔄 Reset Portfolio & Clear Cache"):
+        if os.path.exists(PORTFOLIO_FILE):
+            os.remove(PORTFOLIO_FILE)
+        st.session_state.cached_prices = {}
         st.rerun()
 
 # Save settings back to JSON
@@ -147,21 +148,45 @@ with open(PORTFOLIO_FILE, "w") as f:
     json.dump(saved_data, f, indent=4)
 
 if saved_data["bot_running"]:
-    st.success(f"🟢 STATUS: BOT ACTIVE (Tracking {len(selected_symbols)} Selected Coins)")
+    st.success(f"🟢 STATUS: BOT ACTIVE (Tracking {len(selected_symbols)} Active Coins)")
 else:
     st.warning("🔴 STATUS: BOT PAUSED")
 
-# --- UNBLOCKED LIVE PRICE FETCHING ---
-def fetch_binance_prices():
+# --- BULLETPROOF PRICE FETCHING WITH DIAGNOSTICS ---
+def fetch_live_prices():
+    price_dict = {}
+    error_log = []
+
+    # 1. Try Binance US/Global API
     try:
-        r = requests.get("https://api.binance.com/api/v3/ticker/price", timeout=3.0)
+        r = requests.get("https://api.binance.com/api/v3/ticker/price", timeout=4.0)
         if r.status_code == 200:
-            data = r.json()
-            price_dict = {item['symbol']: float(item['price']) for item in data if item['symbol'] in ALL_TRADING_SYMBOLS}
-            if price_dict:
-                st.session_state.cached_prices.update(price_dict)
-    except Exception:
-        pass
+            for item in r.json():
+                sym = item['symbol']
+                if sym in ALL_TRADING_SYMBOLS:
+                    price_dict[sym] = float(item['price'])
+        else:
+            error_log.append(f"Binance code: {r.status_code}")
+    except Exception as e:
+        error_log.append(f"Binance error: {str(e)}")
+
+    # 2. Fallback: MEXC Public API (Very reliable on cloud servers)
+    if not price_dict:
+        try:
+            r2 = requests.get("https://api.mexc.com/api/v3/ticker/price", timeout=4.0)
+            if r2.status_code == 200:
+                for item in r2.json():
+                    sym = item['symbol']
+                    if sym in ALL_TRADING_SYMBOLS:
+                        price_dict[sym] = float(item['price'])
+        except Exception as e:
+            error_log.append(f"MEXC error: {str(e)}")
+
+    if price_dict:
+        st.session_state.cached_prices.update(price_dict)
+    elif error_log:
+        st.sidebar.error(f"Price Fetch Warning: {error_log[0]}")
+        
     return st.session_state.cached_prices
 
 def format_price(price):
@@ -176,9 +201,9 @@ def format_price(price):
 
 # --- RENDERING ENGINE ---
 st.metric("Total Cash Balance", f"${saved_data.get('balance', 1000.0):,.2f} USDT")
-live_prices = fetch_binance_prices()
+live_prices = fetch_live_prices()
 
-# 1. OVERVIEW TABLE FOR SELECTED COINS
+# 1. OVERVIEW TABLE
 st.subheader(f"📊 Traded Coins Overview ({len(selected_symbols)} Active Coins)")
 
 summary_rows = []
@@ -218,7 +243,7 @@ if summary_rows:
 
 st.write("---")
 
-# 2. ACTIVE OPEN POSITIONS TABLE
+# 2. ACTIVE OPEN POSITIONS
 st.subheader("💼 Active Open Positions")
 active_positions = [row for row in summary_rows if row["Position"] != "NONE"]
 
@@ -228,7 +253,7 @@ if active_positions:
     df_active = pd.DataFrame(active_positions).drop(columns=['raw_pl'])
     st.dataframe(df_active, use_container_width=True)
 else:
-    st.info("You currently have no open trades. The engine is scanning your selected coins.")
+    st.info("You currently have no open trades. The engine is scanning your active coins.")
 
 # 3. HISTORICAL TRADE LOG
 st.subheader("📋 Global Multi-Asset Historical Trade Log")
