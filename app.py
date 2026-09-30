@@ -4,6 +4,7 @@ import requests
 import json
 import os
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor
 from streamlit_autorefresh import st_autorefresh
 
 # --- PAGE CONFIGURATION ---
@@ -24,14 +25,13 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Refresh every 3 seconds
-st_autorefresh(interval=3000, limit=None, key="bot_ticker_refresh")
+# Refresh every 5 seconds to prevent rate limiting
+st_autorefresh(interval=5000, limit=None, key="bot_ticker_refresh")
 
 st.title("🤖 24/7 Crypto AI Bot (Auto-Execution Engine)")
 
 PORTFOLIO_FILE = "portfolio.json"
 
-# Complete list of 88+ Active Trading Coins
 ALL_TRADING_SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", 
     "SHIBUSDT", "LINKUSDT", "SUIUSDT", "PEPEUSDT", "NEARUSDT", "RENDERUSDT", "FETUSDT", 
@@ -76,9 +76,6 @@ def load_portfolio():
 
 saved_data = load_portfolio()
 
-if 'cached_prices' not in st.session_state: 
-    st.session_state.cached_prices = {}
-
 # --- SIDEBAR CONFIGURATION ---
 st.sidebar.header("⚙️ Bot Settings")
 sb_col1, sb_col2 = st.sidebar.columns(2)
@@ -114,7 +111,6 @@ selected_symbols = st.sidebar.multiselect(
     default=saved_data.get("selected_symbols", ALL_TRADING_SYMBOLS)
 )
 
-# Control Buttons
 col_start, col_stop, col_reset = st.columns(3)
 with col_start:
     if st.button("▶️ START / RESUME BOT", use_container_width=True):
@@ -122,7 +118,7 @@ with col_start:
         st.toast("Bot active!", icon="🟢")
 
 with col_stop:
-    if st.button("⏸️️ PAUSE BOT", use_container_width=True):
+    if st.button("⏸ PAUSE BOT", use_container_width=True):
         saved_data["bot_running"] = False
         st.toast("Bot paused.", icon="🔴")
 
@@ -130,10 +126,8 @@ with col_reset:
     if st.button("🔄 Reset Portfolio & Clear Cache"):
         if os.path.exists(PORTFOLIO_FILE):
             os.remove(PORTFOLIO_FILE)
-        st.session_state.cached_prices = {}
         st.rerun()
 
-# Save settings back to JSON
 saved_data.update({
     "trade_amount_usdt": trade_amount_usdt,
     "allow_shorts": allow_shorts,
@@ -145,102 +139,66 @@ saved_data.update({
     "selected_symbols": selected_symbols
 })
 
-# --- BULLETPROOF RAILWAY-OPTIMIZED PRICE & HISTORICAL ENGINE ---
-def fetch_market_data():
-    if 'cached_prices' not in st.session_state:
-        st.session_state.cached_prices = {}
-
-    price_dict = {}
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
-    }
+# --- FAST PARALLEL DATA FETCHING ---
+def fetch_single_symbol_data(symbol):
+    headers = {"User-Agent": "Mozilla/5.0"}
+    price = 0.0
+    history = []
     
-    # 1. Try Binance Bulk API
     try:
-        r = requests.get("https://api.binance.com/api/v3/ticker/price", headers=headers, timeout=5.0)
+        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=15m&limit=50"
+        r = requests.get(url, headers=headers, timeout=2.0)
         if r.status_code == 200:
-            for item in r.json():
-                sym = item['symbol']
-                if sym in ALL_TRADING_SYMBOLS:
-                    p = float(item['price'])
-                    if p > 0:
-                        price_dict[sym] = p
+            data = r.json()
+            if isinstance(data, list) and len(data) >= 15:
+                history = [float(candle[4]) for candle in data]
+                price = history[-1]
     except Exception:
         pass
 
-    # 2. Try MEXC Bulk API for missing symbols
-    if len(price_dict) < len(ALL_TRADING_SYMBOLS):
+    if price == 0.0:
         try:
-            r2 = requests.get("https://api.mexc.com/api/v3/ticker/price", headers=headers, timeout=5.0)
-            if r2.status_code == 200:
-                for item in r2.json():
-                    sym = item['symbol']
-                    if sym in ALL_TRADING_SYMBOLS and sym not in price_dict:
-                        p = float(item['price'])
-                        if p > 0:
-                            price_dict[sym] = p
+            url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval=15m&limit=50"
+            r = requests.get(url, headers=headers, timeout=2.0)
+            if r.status_code == 200:
+                data = r.json()
+                if isinstance(data, list) and len(data) >= 15:
+                    history = [float(candle[4]) for candle in data]
+                    price = history[-1]
         except Exception:
             pass
 
-    for sym in ALL_TRADING_SYMBOLS:
-        if sym in price_dict and price_dict[sym] > 0:
-            st.session_state.cached_prices[sym] = price_dict[sym]
+    return symbol, price, history
 
-    return st.session_state.cached_prices
-
-@st.cache_data(ttl=15)
-def fetch_real_history(symbol, interval="15m", limit=100):
-    """Fetches real market candle closes directly from Binance/MEXC APIs."""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
-    }
-    try:
-        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
-        r = requests.get(url, headers=headers, timeout=4.0)
-        if r.status_code == 200:
-            data = r.json()
-            if isinstance(data, list) and len(data) >= 15:
-                return [float(candle[4]) for candle in data]
-    except Exception:
-        pass
-
-    try:
-        url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
-        r = requests.get(url, headers=headers, timeout=4.0)
-        if r.status_code == 200:
-            data = r.json()
-            if isinstance(data, list) and len(data) >= 15:
-                return [float(candle[4]) for candle in data]
-    except Exception:
-        pass
-
-    return []
+@st.cache_data(ttl=5)
+def get_all_market_data(symbols):
+    results = {}
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        futures = [executor.submit(fetch_single_symbol_data, sym) for sym in symbols]
+        for future in futures:
+            sym, price, history = future.result()
+            results[sym] = {"price": price, "history": history}
+    return results
 
 def calculate_rsi(prices, period=14):
-    """Calculates standard Wilder's Smoothing RSI."""
     if len(prices) < period + 1:
         return 50.0
-    
     deltas = np.diff(prices)
     gains = np.where(deltas > 0, deltas, 0)
     losses = np.where(deltas < 0, -deltas, 0)
-    
     avg_gain = np.mean(gains[:period])
     avg_loss = np.mean(losses[:period])
-    
     for i in range(period, len(deltas)):
         avg_gain = (avg_gain * (period - 1) + gains[i]) / period
         avg_loss = (avg_loss * (period - 1) + losses[i]) / period
-        
     if avg_loss == 0:
         return 100.0 if avg_gain > 0 else 50.0
-        
     rs = avg_gain / avg_loss
     return round(float(100.0 - (100.0 / (1.0 + rs))), 1)
 
 def format_price(price):
     if price <= 0:
-        return "$1.25"
+        return "$0.00"
     if price < 0.01:
         return f"${price:,.6f}"
     elif price < 1.0:
@@ -250,26 +208,22 @@ def format_price(price):
 
 # --- RENDERING & AUTOMATED EXECUTION ENGINE ---
 st.metric("Total Cash Balance", f"${saved_data.get('balance', 1000.0):,.2f} USDT")
-live_prices = fetch_market_data()
 
 st.subheader(f"📊 Traded Coins Overview ({len(selected_symbols)} Active Coins)")
 
+market_data = get_all_market_data(selected_symbols)
 summary_rows = []
+
 for symbol in selected_symbols:
-    current_price = live_prices.get(symbol, 0.0)
+    sym_info = market_data.get(symbol, {"price": 0.0, "history": []})
+    current_price = sym_info["price"]
+    history_prices = sym_info["history"]
     
     long_qty = saved_data.get("holdings", {}).get(symbol, 0.0)
     short_qty = saved_data.get("short_holdings", {}).get(symbol, 0.0)
     entry_price = saved_data.get("entry_prices", {}).get(symbol, 0.0)
 
-    # Fetch REAL historical prices instead of generating random fake values
-    history_prices = fetch_real_history(symbol, interval="15m", limit=100)
-    
-    if len(history_prices) >= 15:
-        rsi_val = calculate_rsi(history_prices)
-    else:
-        rsi_val = 50.0
-    
+    rsi_val = calculate_rsi(history_prices) if len(history_prices) >= 15 else 50.0
     macd_status = "MACD Bullish" if rsi_val > 50 else "MACD Neutral"
 
     pos = "NONE"
@@ -346,7 +300,7 @@ for symbol in selected_symbols:
         "raw_pl": raw_pl
     })
 
-# Save portfolio
+# Save portfolio state
 with open(PORTFOLIO_FILE, "w") as f:
     json.dump(saved_data, f, indent=4)
 
@@ -354,7 +308,7 @@ if summary_rows:
     if sort_order == "Current P/L":
         summary_rows.sort(key=lambda x: x['raw_pl'], reverse=True)
     df_summary = pd.DataFrame(summary_rows).drop(columns=['raw_pl'])
-    st.dataframe(df_summary, use_container_width=True)
+    st.dataframe(df_summary, use_container_width=True, height=500)
 
 st.write("---")
 
