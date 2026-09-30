@@ -122,7 +122,7 @@ with col_start:
         st.toast("Bot active!", icon="🟢")
 
 with col_stop:
-    if st.button("⏸️ PAUSE BOT", use_container_width=True):
+    if st.button("⏸️️ PAUSE BOT", use_container_width=True):
         saved_data["bot_running"] = False
         st.toast("Bot paused.", icon="🔴")
 
@@ -145,16 +145,19 @@ saved_data.update({
     "selected_symbols": selected_symbols
 })
 
-# --- BULLETPROOF RAILWAY-OPTIMIZED PRICE ENGINE ---
+# --- BULLETPROOF RAILWAY-OPTIMIZED PRICE & HISTORICAL ENGINE ---
 def fetch_market_data():
     if 'cached_prices' not in st.session_state:
         st.session_state.cached_prices = {}
 
     price_dict = {}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+    }
     
     # 1. Try Binance Bulk API
     try:
-        r = requests.get("https://api.binance.com/api/v3/ticker/price", timeout=5.0)
+        r = requests.get("https://api.binance.com/api/v3/ticker/price", headers=headers, timeout=5.0)
         if r.status_code == 200:
             for item in r.json():
                 sym = item['symbol']
@@ -168,7 +171,7 @@ def fetch_market_data():
     # 2. Try MEXC Bulk API for missing symbols
     if len(price_dict) < len(ALL_TRADING_SYMBOLS):
         try:
-            r2 = requests.get("https://api.mexc.com/api/v3/ticker/price", timeout=5.0)
+            r2 = requests.get("https://api.mexc.com/api/v3/ticker/price", headers=headers, timeout=5.0)
             if r2.status_code == 200:
                 for item in r2.json():
                     sym = item['symbol']
@@ -179,27 +182,61 @@ def fetch_market_data():
         except Exception:
             pass
 
-    # 3. SAFETY NET: If any coin is still missing or 0, assign a dummy base price or fallback to ensure it never says "Syncing..."
     for sym in ALL_TRADING_SYMBOLS:
         if sym in price_dict and price_dict[sym] > 0:
             st.session_state.cached_prices[sym] = price_dict[sym]
-        elif sym not in st.session_state.cached_prices or st.session_state.cached_prices[sym] <= 0:
-            # Fallback mock/baseline price to completely bypass API blockades on Railway
-            st.session_state.cached_prices[sym] = 1.25
 
     return st.session_state.cached_prices
 
+@st.cache_data(ttl=15)
+def fetch_real_history(symbol, interval="15m", limit=100):
+    """Fetches real market candle closes directly from Binance/MEXC APIs."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+    }
+    try:
+        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+        r = requests.get(url, headers=headers, timeout=4.0)
+        if r.status_code == 200:
+            data = r.json()
+            if isinstance(data, list) and len(data) >= 15:
+                return [float(candle[4]) for candle in data]
+    except Exception:
+        pass
+
+    try:
+        url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+        r = requests.get(url, headers=headers, timeout=4.0)
+        if r.status_code == 200:
+            data = r.json()
+            if isinstance(data, list) and len(data) >= 15:
+                return [float(candle[4]) for candle in data]
+    except Exception:
+        pass
+
+    return []
+
 def calculate_rsi(prices, period=14):
+    """Calculates standard Wilder's Smoothing RSI."""
     if len(prices) < period + 1:
         return 50.0
+    
     deltas = np.diff(prices)
-    seed = deltas[:period+1]
-    up = seed[seed >= 0].sum() / period
-    down = -seed[seed < 0].sum() / period
-    if down == 0:
-        return 100.0
-    rs = up / down
-    return float(100.0 - (100.0 / (1.0 + rs)))
+    gains = np.where(deltas > 0, deltas, 0)
+    losses = np.where(deltas < 0, -deltas, 0)
+    
+    avg_gain = np.mean(gains[:period])
+    avg_loss = np.mean(losses[:period])
+    
+    for i in range(period, len(deltas)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+        
+    if avg_loss == 0:
+        return 100.0 if avg_gain > 0 else 50.0
+        
+    rs = avg_gain / avg_loss
+    return round(float(100.0 - (100.0 / (1.0 + rs))), 1)
 
 def format_price(price):
     if price <= 0:
@@ -219,16 +256,19 @@ st.subheader(f"📊 Traded Coins Overview ({len(selected_symbols)} Active Coins)
 
 summary_rows = []
 for symbol in selected_symbols:
-    current_price = live_prices.get(symbol, 1.25)
+    current_price = live_prices.get(symbol, 0.0)
     
     long_qty = saved_data.get("holdings", {}).get(symbol, 0.0)
     short_qty = saved_data.get("short_holdings", {}).get(symbol, 0.0)
     entry_price = saved_data.get("entry_prices", {}).get(symbol, 0.0)
 
-    np.random.seed(hash(symbol) % 10000)
-    simulated_history = [current_price * (1 + np.random.uniform(-0.02, 0.02)) for _ in range(15)]
-    simulated_history.append(current_price)
-    rsi_val = calculate_rsi(simulated_history)
+    # Fetch REAL historical prices instead of generating random fake values
+    history_prices = fetch_real_history(symbol, interval="15m", limit=100)
+    
+    if len(history_prices) >= 15:
+        rsi_val = calculate_rsi(history_prices)
+    else:
+        rsi_val = 50.0
     
     macd_status = "MACD Bullish" if rsi_val > 50 else "MACD Neutral"
 
@@ -273,7 +313,7 @@ for symbol in selected_symbols:
                         "Type": "BUY (LONG)",
                         "Price": current_price,
                         "Value": trade_size,
-                        "Note": f"Strong Buy (RSI: {rsi_val:.1f}, BB Lower Hit, {macd_status})"
+                        "Note": f"Strong Buy (RSI: {rsi_val:.1f}, {macd_status})"
                     })
                     pos, entry_price, status, reason = "LONG", current_price, "BUY", f"Strong Buy (RSI: {rsi_val:.1f}, {macd_status})"
                 elif allow_shorts and rsi_val >= rsi_overbought:
