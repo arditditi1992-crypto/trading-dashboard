@@ -44,8 +44,11 @@ def load_portfolio():
     }
 
 def save_portfolio(data):
-    with open(PORTFOLIO_FILE, "w") as f:
-        json.dump(data, f, indent=4)
+    try:
+        with open(PORTFOLIO_FILE, "w") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        print(f"Error saving portfolio: {e}")
 
 def fetch_prices():
     price_dict = {}
@@ -85,7 +88,7 @@ def calculate_rsi(prices, period=14):
         return 100.0
     return float(100.0 - (100.0 / (1.0 + (up / down))))
 
-print("🤖 Background Trading Bot Worker Started...")
+print("🤖 Background Trading Bot Worker Active & Running...")
 
 while True:
     try:
@@ -103,16 +106,19 @@ while True:
             entry_prices = portfolio.setdefault("entry_prices", {})
             trade_history = portfolio.setdefault("trade_history", [])
 
+            trades_executed = 0
+
             for symbol, current_price in prices.items():
                 long_qty = holdings.get(symbol, 0.0)
                 short_qty = short_holdings.get(symbol, 0.0)
                 entry_price = entry_prices.get(symbol, 0.0)
 
-                np.random.seed(hash(symbol) % 10000)
+                # Dynamically calculate price history without fixed seed freezing
                 sim_history = [current_price * (1 + np.random.uniform(-0.02, 0.02)) for _ in range(15)]
                 sim_history.append(current_price)
                 rsi_val = calculate_rsi(sim_history)
 
+                # Check Long exit conditions
                 if long_qty > 0 and entry_price > 0:
                     raw_pl = ((current_price - entry_price) / entry_price) * 100
                     if raw_pl >= take_profit or raw_pl <= -stop_loss or rsi_val >= rsi_ob:
@@ -126,7 +132,10 @@ while True:
                             "Value": long_qty * current_price,
                             "Note": f"Exit target reached ({raw_pl:+.2f}%)"
                         })
+                        trades_executed += 1
+                        print(f"✅ Executed CLOSE LONG on {symbol} at ${current_price}")
 
+                # Check Short exit conditions
                 elif short_qty > 0 and entry_price > 0:
                     raw_pl = ((entry_price - current_price) / entry_price) * 100
                     if raw_pl >= take_profit or raw_pl <= -stop_loss or rsi_val <= rsi_os:
@@ -140,7 +149,10 @@ while True:
                             "Value": short_qty * current_price,
                             "Note": f"Exit target reached ({raw_pl:+.2f}%)"
                         })
+                        trades_executed += 1
+                        print(f"✅ Executed CLOSE SHORT on {symbol} at ${current_price}")
 
+                # Check new entry conditions
                 elif long_qty == 0 and short_qty == 0:
                     cash = portfolio.get("balance", 1000.0)
                     trade_size = portfolio.get("trade_amount_usdt", 10.0)
@@ -157,6 +169,9 @@ while True:
                                 "Value": trade_size,
                                 "Note": f"Auto Buy (RSI: {rsi_val:.1f})"
                             })
+                            trades_executed += 1
+                            print(f"🚀 Executed BUY (LONG) on {symbol} at ${current_price} (RSI: {rsi_val:.1f})")
+
                         elif allow_shorts and rsi_val >= rsi_ob:
                             portfolio["balance"] -= trade_size
                             short_holdings[symbol] = trade_size / current_price
@@ -169,9 +184,5 @@ while True:
                                 "Value": trade_size,
                                 "Note": f"Auto Short (RSI: {rsi_val:.1f})"
                             })
-
-            save_portfolio(portfolio)
-    except Exception as e:
-        print(f"Error in background worker: {e}")
-    
-    time.sleep(3)
+                            trades_executed += 1
+                            print(f"🔻 Executed SHORT on {symbol} at ${It looks like the code or context didn't come through! Please share the code snippet you're working on, along with the error message or issue you'd like fixed, and I will write out the full corrected solution for you.
