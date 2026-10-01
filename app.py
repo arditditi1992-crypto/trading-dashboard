@@ -25,7 +25,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Refresh every 5 seconds to prevent rate limiting
+# Refresh every 5 seconds
 st_autorefresh(interval=5000, limit=None, key="bot_ticker_refresh")
 
 st.title("🤖 24/7 Crypto AI Bot (Auto-Execution Engine)")
@@ -232,25 +232,85 @@ for symbol in selected_symbols:
     status = "HOLD"
     reason = f"Neutral (RSI: {rsi_val:.1f} | {macd_status})"
 
+    # --- LONG POSITION EVALUATION & CLOSING ---
     if long_qty > 0 and entry_price > 0 and current_price > 0:
         pos = "LONG"
         raw_pl = ((current_price - entry_price) / entry_price) * 100
         pl_str = f"{raw_pl:+.2f}%"
-        if raw_pl >= take_profit_pct or raw_pl <= -stop_loss_pct or rsi_val >= rsi_overbought:
-            status = "CLOSE"
-            reason = f"Exit target reached ({raw_pl:+.2f}%)"
+        
+        # Check Exit Trigger
+        should_close = False
+        close_reason = ""
+        if raw_pl >= take_profit_pct:
+            should_close = True
+            close_reason = f"Take Profit Hit ({raw_pl:+.2f}%)"
+        elif raw_pl <= -stop_loss_pct:
+            should_close = True
+            close_reason = f"Stop Loss Hit ({raw_pl:+.2f}%)"
+        elif rsi_val >= rsi_overbought:
+            should_close = True
+            close_reason = f"Overbought RSI Exit ({rsi_val:.1f})"
+
+        if should_close and saved_data["bot_running"]:
+            returned_amount = (long_qty * current_price)
+            saved_data["balance"] += returned_amount
+            saved_data["holdings"][symbol] = 0.0
+            saved_data["entry_prices"][symbol] = 0.0
+            
+            saved_data.setdefault("trade_history", []).append({
+                "Time": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "Asset": symbol,
+                "Type": "CLOSE (LONG)",
+                "Price": current_price,
+                "P/L (%)": f"{raw_pl:+.2f}%",
+                "Returned ($)": f"${returned_amount:,.2f}",
+                "Note": close_reason
+            })
+            pos, status, reason = "NONE", "CLOSED", close_reason
         else:
             status = "HOLD"
             reason = f"Holding Long ({raw_pl:+.2f}% | RSI: {rsi_val:.1f})"
             
+    # --- SHORT POSITION EVALUATION & CLOSING ---
     elif short_qty > 0 and entry_price > 0 and current_price > 0:
         pos = "SHORT"
         raw_pl = ((entry_price - current_price) / entry_price) * 100
         pl_str = f"{raw_pl:+.2f}%"
-        if raw_pl >= take_profit_pct or raw_pl <= -stop_loss_pct or rsi_val <= rsi_oversold:
-            status, reason = "CLOSE", f"Exit target reached ({raw_pl:+.2f}%)"
+        
+        # Check Exit Trigger
+        should_close = False
+        close_reason = ""
+        if raw_pl >= take_profit_pct:
+            should_close = True
+            close_reason = f"Take Profit Hit ({raw_pl:+.2f}%)"
+        elif raw_pl <= -stop_loss_pct:
+            should_close = True
+            close_reason = f"Stop Loss Hit ({raw_pl:+.2f}%)"
+        elif rsi_val <= rsi_oversold:
+            should_close = True
+            close_reason = f"Oversold RSI Exit ({rsi_val:.1f})"
+
+        if should_close and saved_data["bot_running"]:
+            initial_val = short_qty * entry_price
+            returned_amount = initial_val + (initial_val * (raw_pl / 100))
+            saved_data["balance"] += returned_amount
+            saved_data["short_holdings"][symbol] = 0.0
+            saved_data["entry_prices"][symbol] = 0.0
+            
+            saved_data.setdefault("trade_history", []).append({
+                "Time": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "Asset": symbol,
+                "Type": "CLOSE (SHORT)",
+                "Price": current_price,
+                "P/L (%)": f"{raw_pl:+.2f}%",
+                "Returned ($)": f"${returned_amount:,.2f}",
+                "Note": close_reason
+            })
+            pos, status, reason = "NONE", "CLOSED", close_reason
         else:
             status, reason = "HOLD", f"Holding Short ({raw_pl:+.2f}% | RSI: {rsi_val:.1f})"
+            
+    # --- ENTRY EXECUTION ---
     else:
         if saved_data["bot_running"] and current_price > 0:
             cash = saved_data.get("balance", 1000.0)
@@ -266,10 +326,11 @@ for symbol in selected_symbols:
                         "Asset": symbol,
                         "Type": "BUY (LONG)",
                         "Price": current_price,
-                        "Value": trade_size,
-                        "Note": f"Strong Buy (RSI: {rsi_val:.1f}, {macd_status})"
+                        "P/L (%)": "0.00%",
+                        "Returned ($)": f"-${trade_size:,.2f}",
+                        "Note": f"Strong Buy Entry (RSI: {rsi_val:.1f})"
                     })
-                    pos, entry_price, status, reason = "LONG", current_price, "BUY", f"Strong Buy (RSI: {rsi_val:.1f}, {macd_status})"
+                    pos, entry_price, status, reason = "LONG", current_price, "BUY", f"Strong Buy (RSI: {rsi_val:.1f})"
                 elif allow_shorts and rsi_val >= rsi_overbought:
                     saved_data["balance"] -= trade_size
                     saved_data.setdefault("short_holdings", {})[symbol] = trade_size / current_price
@@ -279,10 +340,11 @@ for symbol in selected_symbols:
                         "Asset": symbol,
                         "Type": "SHORT",
                         "Price": current_price,
-                        "Value": trade_size,
-                        "Note": f"Strong Short (RSI: {rsi_val:.1f}, Overbought)"
+                        "P/L (%)": "0.00%",
+                        "Returned ($)": f"-${trade_size:,.2f}",
+                        "Note": f"Strong Short Entry (RSI: {rsi_val:.1f})"
                     })
-                    pos, entry_price, status, reason = "SHORT", current_price, "SHORT", f"Strong Short (RSI: {rsi_val:.1f}, Overbought)"
+                    pos, entry_price, status, reason = "SHORT", current_price, "SHORT", f"Strong Short (RSI: {rsi_val:.1f})"
                 else:
                     status, reason = "HOLD", f"Neutral (RSI: {rsi_val:.1f} | {macd_status})"
             else:
@@ -325,6 +387,6 @@ else:
 st.subheader("📋 Multi-Asset Trade Log")
 trade_history = saved_data.get("trade_history", [])
 if len(trade_history) > 0:
-    st.table(pd.DataFrame(trade_history).iloc[::-1])
+    st.dataframe(pd.DataFrame(trade_history).iloc[::-1], use_container_width=True)
 else:
     st.info("No trades logged yet across your active assets.")
