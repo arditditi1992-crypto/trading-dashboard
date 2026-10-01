@@ -206,6 +206,13 @@ def format_price(price):
     else:
         return f"${price:,.2f}"
 
+def format_currency_amount(val):
+    try:
+        val_float = float(val)
+        return f"${int(val_float)}" if val_float.is_integer() else f"${val_float:,.2f}"
+    except Exception:
+        return str(val)
+
 # --- RENDERING & AUTOMATED EXECUTION ENGINE ---
 st.metric("Total Cash Balance", f"${saved_data.get('balance', 1000.0):,.2f} USDT")
 
@@ -238,7 +245,6 @@ for symbol in selected_symbols:
         raw_pl = ((current_price - entry_price) / entry_price) * 100
         pl_str = f"{raw_pl:+.2f}%"
         
-        # Check Exit Trigger
         should_close = False
         close_reason = ""
         if raw_pl >= take_profit_pct:
@@ -261,7 +267,8 @@ for symbol in selected_symbols:
                 "Time": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "Asset": symbol,
                 "Type": "CLOSE (LONG)",
-                "Price": current_price,
+                "Price": format_price(current_price),
+                "Value ($)": format_currency_amount(long_qty * entry_price),
                 "P/L (%)": f"{raw_pl:+.2f}%",
                 "Returned ($)": f"${returned_amount:,.2f}",
                 "Note": close_reason
@@ -277,7 +284,6 @@ for symbol in selected_symbols:
         raw_pl = ((entry_price - current_price) / entry_price) * 100
         pl_str = f"{raw_pl:+.2f}%"
         
-        # Check Exit Trigger
         should_close = False
         close_reason = ""
         if raw_pl >= take_profit_pct:
@@ -301,7 +307,8 @@ for symbol in selected_symbols:
                 "Time": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "Asset": symbol,
                 "Type": "CLOSE (SHORT)",
-                "Price": current_price,
+                "Price": format_price(current_price),
+                "Value ($)": format_currency_amount(initial_val),
                 "P/L (%)": f"{raw_pl:+.2f}%",
                 "Returned ($)": f"${returned_amount:,.2f}",
                 "Note": close_reason
@@ -325,9 +332,10 @@ for symbol in selected_symbols:
                         "Time": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "Asset": symbol,
                         "Type": "BUY (LONG)",
-                        "Price": current_price,
-                        "P/L (%)": "0.00%",
-                        "Returned ($)": f"-${trade_size:,.2f}",
+                        "Price": format_price(current_price),
+                        "Value ($)": format_currency_amount(trade_size),
+                        "P/L (%)": "Open",
+                        "Returned ($)": "-",
                         "Note": f"Strong Buy Entry (RSI: {rsi_val:.1f})"
                     })
                     pos, entry_price, status, reason = "LONG", current_price, "BUY", f"Strong Buy (RSI: {rsi_val:.1f})"
@@ -339,9 +347,10 @@ for symbol in selected_symbols:
                         "Time": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "Asset": symbol,
                         "Type": "SHORT",
-                        "Price": current_price,
-                        "P/L (%)": "0.00%",
-                        "Returned ($)": f"-${trade_size:,.2f}",
+                        "Price": format_price(current_price),
+                        "Value ($)": format_currency_amount(trade_size),
+                        "P/L (%)": "Open",
+                        "Returned ($)": "-",
                         "Note": f"Strong Short Entry (RSI: {rsi_val:.1f})"
                     })
                     pos, entry_price, status, reason = "SHORT", current_price, "SHORT", f"Strong Short (RSI: {rsi_val:.1f})"
@@ -385,8 +394,33 @@ else:
     st.info("You currently have no open trades. The engine is scanning your active coins.")
 
 st.subheader("📋 Multi-Asset Trade Log")
-trade_history = saved_data.get("trade_history", [])
-if len(trade_history) > 0:
-    st.dataframe(pd.DataFrame(trade_history).iloc[::-1], use_container_width=True)
+raw_history = saved_data.get("trade_history", [])
+
+if len(raw_history) > 0:
+    formatted_history = []
+    for item in raw_history:
+        row = dict(item)
+        # Normalize old 'Value' column into 'Value ($)'
+        val = row.pop("Value", None)
+        if "Value ($)" not in row:
+            row["Value ($)"] = format_currency_amount(val) if val is not None else "$0"
+        else:
+            row["Value ($)"] = format_currency_amount(row["Value ($)"])
+            
+        # Ensure P/L (%) and Returned ($) exist for legacy rows
+        if "P/L (%)" not in row:
+            row["P/L (%)"] = "Open"
+        if "Returned ($)" not in row:
+            row["Returned ($)"] = "-"
+            
+        formatted_history.append(row)
+
+    df_log = pd.DataFrame(formatted_history).iloc[::-1]
+    
+    # Reorder columns cleanly
+    col_order = ["Time", "Asset", "Type", "Price", "Value ($)", "P/L (%)", "Returned ($)", "Note"]
+    existing_cols = [c for c in col_order if c in df_log.columns]
+    
+    st.dataframe(df_log[existing_cols], use_container_width=True)
 else:
     st.info("No trades logged yet across your active assets.")
