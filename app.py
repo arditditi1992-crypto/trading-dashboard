@@ -255,7 +255,7 @@ for symbol in selected_symbols:
             close_reason = f"Stop Loss Hit ({raw_pl:+.2f}%)"
         elif rsi_val >= rsi_overbought:
             should_close = True
-            close_reason = f"Overbought RSI Exit ({rsi_val:.1f})"
+            close_reason = f"Overbought Exit ({rsi_val:.1f})"
 
         if should_close and saved_data["bot_running"]:
             returned_amount = (long_qty * current_price)
@@ -263,16 +263,15 @@ for symbol in selected_symbols:
             saved_data["holdings"][symbol] = 0.0
             saved_data["entry_prices"][symbol] = 0.0
             
-            saved_data.setdefault("trade_history", []).append({
-                "Time": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "Asset": symbol,
-                "Type": "CLOSE (LONG)",
-                "Price": format_price(current_price),
-                "Value ($)": format_currency_amount(long_qty * entry_price),
-                "P/L (%)": f"{raw_pl:+.2f}%",
-                "Returned ($)": f"${returned_amount:,.2f}",
-                "Note": close_reason
-            })
+            # Update the original trade row instead of appending a new one
+            for trade in reversed(saved_data.get("trade_history", [])):
+                if trade.get("Asset") == symbol and trade.get("P/L (%)") == "Open":
+                    trade["P/L (%)"] = f"{raw_pl:+.2f}%"
+                    trade["Close Price"] = format_price(current_price)
+                    trade["Returned ($)"] = f"${returned_amount:,.2f}"
+                    trade["Note"] = f"Closed: {close_reason}"
+                    break
+                    
             pos, status, reason = "NONE", "CLOSED", close_reason
         else:
             status = "HOLD"
@@ -294,7 +293,7 @@ for symbol in selected_symbols:
             close_reason = f"Stop Loss Hit ({raw_pl:+.2f}%)"
         elif rsi_val <= rsi_oversold:
             should_close = True
-            close_reason = f"Oversold RSI Exit ({rsi_val:.1f})"
+            close_reason = f"Oversold Exit ({rsi_val:.1f})"
 
         if should_close and saved_data["bot_running"]:
             initial_val = short_qty * entry_price
@@ -303,16 +302,15 @@ for symbol in selected_symbols:
             saved_data["short_holdings"][symbol] = 0.0
             saved_data["entry_prices"][symbol] = 0.0
             
-            saved_data.setdefault("trade_history", []).append({
-                "Time": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "Asset": symbol,
-                "Type": "CLOSE (SHORT)",
-                "Price": format_price(current_price),
-                "Value ($)": format_currency_amount(initial_val),
-                "P/L (%)": f"{raw_pl:+.2f}%",
-                "Returned ($)": f"${returned_amount:,.2f}",
-                "Note": close_reason
-            })
+            # Update the original trade row instead of appending a new one
+            for trade in reversed(saved_data.get("trade_history", [])):
+                if trade.get("Asset") == symbol and trade.get("P/L (%)") == "Open":
+                    trade["P/L (%)"] = f"{raw_pl:+.2f}%"
+                    trade["Close Price"] = format_price(current_price)
+                    trade["Returned ($)"] = f"${returned_amount:,.2f}"
+                    trade["Note"] = f"Closed: {close_reason}"
+                    break
+                    
             pos, status, reason = "NONE", "CLOSED", close_reason
         else:
             status, reason = "HOLD", f"Holding Short ({raw_pl:+.2f}% | RSI: {rsi_val:.1f})"
@@ -335,8 +333,9 @@ for symbol in selected_symbols:
                         "Price": format_price(current_price),
                         "Value ($)": format_currency_amount(trade_size),
                         "P/L (%)": "Open",
+                        "Close Price": "-",
                         "Returned ($)": "-",
-                        "Note": f"Strong Buy Entry (RSI: {rsi_val:.1f})"
+                        "Note": f"Buy Entry (RSI: {rsi_val:.1f})"
                     })
                     pos, entry_price, status, reason = "LONG", current_price, "BUY", f"Strong Buy (RSI: {rsi_val:.1f})"
                 elif allow_shorts and rsi_val >= rsi_overbought:
@@ -350,8 +349,9 @@ for symbol in selected_symbols:
                         "Price": format_price(current_price),
                         "Value ($)": format_currency_amount(trade_size),
                         "P/L (%)": "Open",
+                        "Close Price": "-",
                         "Returned ($)": "-",
-                        "Note": f"Strong Short Entry (RSI: {rsi_val:.1f})"
+                        "Note": f"Short Entry (RSI: {rsi_val:.1f})"
                     })
                     pos, entry_price, status, reason = "SHORT", current_price, "SHORT", f"Strong Short (RSI: {rsi_val:.1f})"
                 else:
@@ -400,16 +400,19 @@ if len(raw_history) > 0:
     formatted_history = []
     for item in raw_history:
         row = dict(item)
-        # Normalize old 'Value' column into 'Value ($)'
         val = row.pop("Value", None)
         if "Value ($)" not in row:
             row["Value ($)"] = format_currency_amount(val) if val is not None else "$0"
         else:
             row["Value ($)"] = format_currency_amount(row["Value ($)"])
             
-        # Ensure P/L (%) and Returned ($) exist for legacy rows
         if "P/L (%)" not in row:
             row["P/L (%)"] = "Open"
+        
+        # Add fallback for the new Close Price column
+        if "Close Price" not in row:
+            row["Close Price"] = "-"
+            
         if "Returned ($)" not in row:
             row["Returned ($)"] = "-"
             
@@ -417,8 +420,8 @@ if len(raw_history) > 0:
 
     df_log = pd.DataFrame(formatted_history).iloc[::-1]
     
-    # Reorder columns cleanly
-    col_order = ["Time", "Asset", "Type", "Price", "Value ($)", "P/L (%)", "Returned ($)", "Note"]
+    # New Column Order with "Close Price" right after "P/L (%)"
+    col_order = ["Time", "Asset", "Type", "Price", "Value ($)", "P/L (%)", "Close Price", "Returned ($)", "Note"]
     existing_cols = [c for c in col_order if c in df_log.columns]
     
     st.dataframe(df_log[existing_cols], use_container_width=True)
