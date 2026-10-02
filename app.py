@@ -63,6 +63,7 @@ def load_portfolio():
         "vol_multiplier": 1.3,
         "bot_running": True
     }
+    
     if os.path.exists(PORTFOLIO_FILE):
         try:
             with open(PORTFOLIO_FILE, "r") as f:
@@ -72,23 +73,31 @@ def load_portfolio():
                     data["selected_symbols"] = ALL_TRADING_SYMBOLS
         except Exception:
             pass
+
+    # --- BULLETPROOF LEGACY CLEANUP (RUNS ON LOAD) ---
+    active_assets = []
+    for sym, qty in data.get("holdings", {}).items():
+        if qty > 0: active_assets.append(sym)
+    for sym, qty in data.get("short_holdings", {}).items():
+        if qty > 0: active_assets.append(sym)
+        
+    history_changed = False
+    for trade in data.get("trade_history", []):
+        if trade.get("P/L (%)") == "Open" and trade.get("Asset") not in active_assets:
+            trade["P/L (%)"] = "Closed (Legacy)"
+            trade["Close Price"] = "-"
+            trade["Returned ($)"] = "-"
+            trade["Note"] = "Cleaned up legacy ghost trade"
+            history_changed = True
+            
+    # Save immediately if we fixed ghost trades
+    if history_changed:
+        with open(PORTFOLIO_FILE, "w") as f:
+            json.dump(data, f, indent=4)
+
     return data
 
 saved_data = load_portfolio()
-
-# --- AUTO-SYNC LEGACY LOGS ---
-# This cleans up any "ghost" open trades from the old code logic
-for trade in saved_data.get("trade_history", []):
-    sym = trade.get("Asset")
-    long_qty = saved_data.get("holdings", {}).get(sym, 0.0)
-    short_qty = saved_data.get("short_holdings", {}).get(sym, 0.0)
-    
-    # If the log says "Open" but we no longer have a position in that coin
-    if trade.get("P/L (%)") == "Open" and long_qty == 0.0 and short_qty == 0.0:
-        trade["P/L (%)"] = "Closed"
-        trade["Close Price"] = "Unknown"
-        trade["Returned ($)"] = "Sync"
-        trade["Note"] = "Closed prior to update"
 
 # --- SIDEBAR CONFIGURATION ---
 st.sidebar.header("⚙️ Bot Settings")
