@@ -76,6 +76,20 @@ def load_portfolio():
 
 saved_data = load_portfolio()
 
+# --- AUTO-SYNC LEGACY LOGS ---
+# This cleans up any "ghost" open trades from the old code logic
+for trade in saved_data.get("trade_history", []):
+    sym = trade.get("Asset")
+    long_qty = saved_data.get("holdings", {}).get(sym, 0.0)
+    short_qty = saved_data.get("short_holdings", {}).get(sym, 0.0)
+    
+    # If the log says "Open" but we no longer have a position in that coin
+    if trade.get("P/L (%)") == "Open" and long_qty == 0.0 and short_qty == 0.0:
+        trade["P/L (%)"] = "Closed"
+        trade["Close Price"] = "Unknown"
+        trade["Returned ($)"] = "Sync"
+        trade["Note"] = "Closed prior to update"
+
 # --- SIDEBAR CONFIGURATION ---
 st.sidebar.header("⚙️ Bot Settings")
 sb_col1, sb_col2 = st.sidebar.columns(2)
@@ -263,7 +277,6 @@ for symbol in selected_symbols:
             saved_data["holdings"][symbol] = 0.0
             saved_data["entry_prices"][symbol] = 0.0
             
-            # Update the original trade row instead of appending a new one
             for trade in reversed(saved_data.get("trade_history", [])):
                 if trade.get("Asset") == symbol and trade.get("P/L (%)") == "Open":
                     trade["P/L (%)"] = f"{raw_pl:+.2f}%"
@@ -302,7 +315,6 @@ for symbol in selected_symbols:
             saved_data["short_holdings"][symbol] = 0.0
             saved_data["entry_prices"][symbol] = 0.0
             
-            # Update the original trade row instead of appending a new one
             for trade in reversed(saved_data.get("trade_history", [])):
                 if trade.get("Asset") == symbol and trade.get("P/L (%)") == "Open":
                     trade["P/L (%)"] = f"{raw_pl:+.2f}%"
@@ -409,7 +421,6 @@ if len(raw_history) > 0:
         if "P/L (%)" not in row:
             row["P/L (%)"] = "Open"
         
-        # Add fallback for the new Close Price column
         if "Close Price" not in row:
             row["Close Price"] = "-"
             
@@ -420,7 +431,6 @@ if len(raw_history) > 0:
 
     df_log = pd.DataFrame(formatted_history).iloc[::-1]
     
-    # New Column Order with "Close Price" right after "P/L (%)"
     col_order = ["Time", "Asset", "Type", "Price", "Value ($)", "P/L (%)", "Close Price", "Returned ($)", "Note"]
     existing_cols = [c for c in col_order if c in df_log.columns]
     
